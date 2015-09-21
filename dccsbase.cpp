@@ -39,7 +39,7 @@
 
 #endif
 
-#ifdef _WINDOWS
+#if defined(_WIN32) || defined(_WINDOWS)
 #define decl_align(type, n, var)	__declspec(align(n)) ##type var
 #else
 #define decl_align(type, n, var)	type var __attribute__((aligned(n)))
@@ -47,7 +47,7 @@
 
 // scale by 1024
 decl_align(short, 16, coefBGR[8]) = { 117, 601, 306, 0, 0, 117, 601, 306};
-void rgb2gray_s_sse2(OUT unsigned char* gray, IN unsigned char* rgb, IN int count)
+void rgb2gray_s_sse2(OUT unsigned char* gray, IN unsigned char const* rgb, IN int count)
 {
     __asm
     {
@@ -120,7 +120,7 @@ void rgb2gray_s_sse2(OUT unsigned char* gray, IN unsigned char* rgb, IN int coun
 
 decl_align(float, 16, coefBGR_f[4]) = { 0.114020904255103f, 0.587043074451121f, 0.298936021293775f, 0.f};
 decl_align(float, 16, coefRound_f[4]) = { 0.5f, 0.5f, 0.5f, 0.5f};
-void rgb2gray_f_sse2(OUT unsigned char* gray, IN unsigned char* rgb, IN int count)
+void rgb2gray_f_sse2(OUT unsigned char* gray, IN unsigned char const* rgb, IN int count)
 {
     __asm
     {
@@ -201,3 +201,112 @@ void rgb2gray_f_sse2(OUT unsigned char* gray, IN unsigned char* rgb, IN int coun
     }
 }
 
+void get_gr_channel_sse2(unsigned char* green, unsigned char* red, unsigned char const* bgr, int count)
+{
+    __asm
+    {
+        movsxd      eax_ptr, count;
+        mov         ebx_ptr, green;
+        mov         ecx_ptr, red;
+        mov         esi_ptr, bgr;
+        pcmpeqb     xmm0, xmm0;
+        psrld       xmm0, 24;
+        sub         eax_ptr, 8;
+        jl          loop_1_pre;
+    loop_8:
+        movsd       xmm1, [esi_ptr];
+        movdqu      xmm2, [esi_ptr + 8];
+        shufpd      xmm1, xmm2, 0;
+        shufps      xmm1, xmm1, 0x94;
+        shufps      xmm2, xmm2, 0xe9;
+        pshuflw     xmm1, xmm1, 0x94;
+        pshuflw     xmm2, xmm2, 0x94;
+        pshufhw     xmm1, xmm1, 0xe9;
+        pshufhw     xmm2, xmm2, 0xe9;
+        movaps      xmm3, xmm1;
+        shufps      xmm1, xmm2, 0x88;
+        shufps      xmm3, xmm2, 0xdd;
+        movaps      xmm2, xmm1;
+        movaps      xmm4, xmm3;
+        psrld       xmm1, 8;
+        psrld       xmm2, 16;
+        psrld       xmm3, 16;
+        psrld       xmm4, 24;
+        pand        xmm1, xmm0;
+        pand        xmm2, xmm0;
+        pand        xmm3, xmm0;
+        pand        xmm4, xmm0;
+        movaps      xmm5, xmm1;
+        movaps      xmm6, xmm2;
+        unpcklps    xmm1, xmm3;
+        unpcklps    xmm2, xmm4;
+        unpckhps    xmm5, xmm3;
+        unpckhps    xmm6, xmm4;
+        packssdw    xmm1, xmm5;
+        packssdw    xmm2, xmm6;
+        packuswb    xmm1, xmm2;
+        movsd       [ebx_ptr], xmm1;
+        movhps      [ecx_ptr], xmm2;
+        add         esi_ptr, 24;
+        add         ebx_ptr, 8;
+        add         ecx_ptr, 8;
+        sub         eax_ptr, 8;
+        jge         loop_8;
+    loop_1_pre:
+        add         eax_ptr, 8;
+        jz          loop_end;
+    loop_1:
+        movzx       edx_ptr, word ptr [esi_ptr];
+        mov         [ebx_ptr], dh;
+        movzx       edx_ptr, byte ptr [esi_ptr + 2];
+        mov         [ecx_ptr], dl;
+        add         esi_ptr, 3;
+        inc         ebx_ptr;
+        inc         ecx_ptr;
+        dec         eax_ptr;
+        jnz         loop_1;
+    loop_end:
+    }
+}
+
+void gray2binary(unsigned char* binary, unsigned char const* gray, int threshold, int count)
+{
+    __asm
+    {
+        movsxd      eax_ptr, count;
+        mov         edi_ptr, binary;
+        mov         esi_ptr, gray;
+        movd        xmm0, threshold;
+        pxor        xmm7, xmm7;
+        shufps      xmm0, xmm0, 0;
+        packssdw    xmm0, xmm0;
+        packuswb    xmm0, xmm0;
+        sub         eax_ptr, 16;
+        jl          loop_1_pre;
+    loop_16:
+        movdqu      xmm1, [esi_ptr];
+        movdqa      xmm2, xmm0;
+        psubusb     xmm2, xmm1;
+        pcmpeqb     xmm2, xmm7;
+        movdqu      [edi_ptr], xmm2;
+        add         esi_ptr, 16;
+        add         edi_ptr, 16;
+        sub         eax_ptr, 16;
+        jge         loop_16;
+    loop_1_pre:
+        add         eax_ptr, 16;
+        jz          loop_1;
+        mov         ebx_ptr, 255;
+    loop_1:
+        movzx       ecx_ptr, byte ptr [esi_ptr];
+        xor         edx_ptr, edx_ptr;
+        cmp         ecx, threshold;
+        cmovae      edx_ptr, ebx_ptr;
+        mov         [edi_ptr], dl;
+        inc         esi_ptr;
+        inc         edi_ptr;
+        dec         eax_ptr;
+        jnz         loop_1;
+    loop_end:
+    }
+}
