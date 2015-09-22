@@ -4,6 +4,7 @@
 
 #define SSE_OPTIMIZE
 #ifdef SSE_OPTIMIZE
+#include <intrin.h>
 #include "dccsbase.h"
 #endif
 
@@ -1047,7 +1048,7 @@ void XhDccsBase::FlagPlateColor(const BYTE* pbyImg, const SIZE& szImg, int nBpp,
                 }
                 else if (IsYellow(pi))
                 {
-                    memset(pob - 2, COLOR_YELLOW, 5);
+                    memset(pob - 2, COLOR_YELLOW, 5);	// bug? maybe fix by pob -> poy
                 }
             }
 
@@ -1064,6 +1065,19 @@ void XhDccsBase::FlagPlateColor(const BYTE* pbyImg, const SIZE& szImg, int nBpp,
     poy       = pbyYellow;  
     BYTE*  pf = pbyFlag;  
 
+#ifdef SSE_OPTIMIZE
+	static __m128i __color_exist = {COLOR_EXIST, COLOR_EXIST, COLOR_EXIST, COLOR_EXIST, COLOR_EXIST, COLOR_EXIST, COLOR_EXIST, COLOR_EXIST, COLOR_EXIST, COLOR_EXIST, COLOR_EXIST, COLOR_EXIST, COLOR_EXIST, COLOR_EXIST, COLOR_EXIST, COLOR_EXIST};
+	__m128i xmm7 = _mm_setzero_si128();
+	for(nBuflen-=16; nBuflen>=0; nBuflen-=16, pob+=16, poy+=16, pf+=16)
+	{
+		__m128i xmm0 = _mm_loadu_si128((__m128i*)pob);
+		__m128i xmm1 = _mm_loadu_si128((__m128i*)poy);
+		xmm0 = _mm_cmpeq_epi8(xmm0, xmm7);
+		xmm1 = _mm_cmpeq_epi8(xmm1, xmm7);
+		_mm_storeu_si128((__m128i*)pf, _mm_andnot_si128(_mm_and_si128(xmm0, xmm1), __color_exist));
+	}
+	nBuflen += 16;
+#endif
     for (i = 0; i < nBuflen; i++, pob++, poy++, pf++)
     {
         if (*pob || *poy)
