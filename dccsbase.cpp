@@ -310,3 +310,42 @@ void gray2binary(unsigned char* binary, unsigned char const* gray, int threshold
     loop_end:
     }
 }
+
+double dotproduct_d(double const* src1, double const* src2, int count)
+{
+    double val = 0;
+    __asm
+    {
+        movsxd      eax_ptr, count;
+        mov         esi_ptr, src1;
+        mov         edi_ptr, src2;
+        xorpd       xmm0, xmm0;
+        sub         eax_ptr, 4;
+        jl          loop_1_pre;
+    loop_4:
+        movupd      xmm1, [esi_ptr];
+        movupd      xmm2, [edi_ptr];
+        movupd      xmm3, [esi_ptr + 0x10];
+        movupd      xmm4, [edi_ptr + 0x10];
+        mulpd       xmm1, xmm2;
+        mulpd       xmm3, xmm4;
+        addpd       xmm0, xmm1;
+        addpd       xmm0, xmm3;
+        add         esi_ptr, 0x20;
+        add         edi_ptr, 0x20;
+        sub         eax_ptr, 4;
+        jge         loop_4;
+    loop_1_pre:
+        add         eax_ptr, 4;
+        jz          loop_end;
+    loop_1:
+        movsd       xmm1, [esi_ptr];
+        mulsd       xmm1, [edi_ptr];
+        addsd       xmm0, xmm1;
+    loop_end:
+        movhlps     xmm1, xmm0;
+        addsd       xmm0, xmm1;
+        movsd       val, xmm0;
+    }
+    return val;
+}

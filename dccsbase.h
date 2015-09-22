@@ -28,6 +28,8 @@ void get_gr_channel_sse2(unsigned char* green, unsigned char* red, unsigned char
     
 void gray2binary(unsigned char* binary, unsigned char const* gray, int count);
     
+double dotproduct_d(double const* src1, double const* src2, int count);
+    
 #if defined(__cplusplus)
 }
 #endif

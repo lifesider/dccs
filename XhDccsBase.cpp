@@ -1076,6 +1076,9 @@ void XhDccsBase::FlagPlateColor(const BYTE* pbyImg, const SIZE& szImg, int nBpp,
 // 实现两段数据的点乘，最后返回乘积之和
 double XhDccsBase::MultyDot(double* dbSrcA, double* dbSrcB, int nLen)
 {
+#ifdef SSE_OPTIMIZE
+    return dotproduct_d(dbSrcA, dbSrcB, nLen);
+#endif
     double dbCnt = 0;
 
     for (int i = 0; i < nLen; i++)
