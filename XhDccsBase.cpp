@@ -278,6 +278,20 @@ void XhDccsBase::RspImgNN(const BYTE* pbySrc, const SIZE& szSrc, int nBpp,
 
     int         i, j;
 
+#ifdef SSE_OPTIMIZE
+	decl_align(float, 16, coef[4]);
+	coef[0] = (float)(dbRX * 0.5);
+	coef[1] = coef[0] + (float)dbRX;
+	coef[2] = coef[1] + (float)dbRX;
+	coef[3] = coef[2] + (float)dbRX;
+	double step = coef[0] + coef[3];
+	for (int j = 0; j < nH; j++, po += nW * (nBpp >> 3))
+	{
+		pRow = pi - (int)(dbRY * (dbOffsetY - j)) * nRowBufLen;
+		resample_nearest_line(po, pRow, nBpp >> 3, coef, step, nW);
+	}
+	return;
+#endif
     if (nBpp == 24)
     {
         for (j = 0; j < nH; j++)
@@ -304,7 +318,7 @@ void XhDccsBase::RspImgNN(const BYTE* pbySrc, const SIZE& szSrc, int nBpp,
                 *po    = *pCol;                             // 复制最近邻点的像素值
             }
         }
-    }	
+    }
 }
 
 // 任意3*3算子滤波, pdbKernel是3*3算子（实际数据为一行九个）

@@ -30,6 +30,8 @@ void gray2binary(unsigned char* binary, unsigned char const* gray, int count);
     
 double dotproduct_d(double const* src1, double const* src2, int count);
     
+void resample_nearest_line(unsigned char* des, unsigned char const* src, int bytes_per_pixel, float coef[4], double step, int width);
+
 #if defined(__cplusplus)
 }
 #endif

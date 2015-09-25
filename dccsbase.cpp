@@ -349,3 +349,57 @@ double dotproduct_d(double const* src1, double const* src2, int count)
     }
     return val;
 }
+
+void resample_nearest_line(unsigned char* des, unsigned char const* src, int bytes_per_pixel, float coef[4], double step, int width)
+{
+	__asm
+	{
+		movsxd		eax_ptr, width;
+		movsxd		ebx_ptr, bytes_per_pixel;
+		mov			edi_ptr, des;
+		mov			ecx_ptr, coef;
+		cvtsd2ss	xmm0, step;
+		movaps		xmm1, [ecx_ptr];
+		shufps		xmm0, xmm0, 0;
+		movd		xmm7, ebx_ptr;
+		shufps		xmm7, xmm7, 0;
+		cld;
+		sub			eax_ptr, 4;
+		jl			loop_1_pre;
+	loop_4:
+		cvttps2dq	xmm2, xmm1;
+		pmullw		xmm2, xmm7;
+		pextrw		esi_ptr, xmm2, 0;
+		mov			ecx_ptr, ebx_ptr;
+		add			esi_ptr, src;
+		repnz		movsb;
+		pextrw		esi_ptr, xmm2, 2;
+		mov			ecx_ptr, ebx_ptr;
+		add			esi_ptr, src;
+		repnz		movsb;
+		pextrw		esi_ptr, xmm2, 4;
+		mov			ecx_ptr, ebx_ptr;
+		add			esi_ptr, src;
+		repnz		movsb;
+		pextrw		esi_ptr, xmm2, 6;
+		mov			ecx_ptr, ebx_ptr;
+		add			esi_ptr, src;
+		repnz		movsb;
+		addps		xmm1, xmm0;
+		sub			eax_ptr, 4;
+		jge			loop_4;
+	loop_1_pre:
+		add			eax_ptr, 4;
+		jz			loop_end;
+	loop_1:
+		cvttss2si	esi_ptr, xmm1;
+		mov			ecx_ptr, ebx_ptr;
+		add			esi_ptr, src;
+		repnz		movsb;
+		shufps		xmm1, xmm1, 111001b;
+		dec			eax_ptr;
+		jnz			loop_1;
+	loop_end:
+
+	}
+}
