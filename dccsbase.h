@@ -32,6 +32,10 @@ double dotproduct_d(double const* src1, double const* src2, int count);
     
 void resample_nearest_line(unsigned char* des, unsigned char const* src, int bytes_per_pixel, float coef[4], double step, int width);
 
+void resample_linear_8_line(unsigned char* des, unsigned char const* src, intptr_t stride, int fy, int kx, int width);
+
+void resample_linear_24_line(unsigned char* des, unsigned char const* src, intptr_t stride, int fy, int kx, int width);
+
 #if defined(__cplusplus)
 }
 #endif

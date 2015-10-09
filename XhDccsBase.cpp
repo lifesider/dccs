@@ -229,6 +229,11 @@ void XhDccsBase::RspImgLinear(const BYTE* pbySrc, const SIZE& szSrc,
             iy = tmp >> NSHIFT;
             fy = tmp - (iy << NSHIFT);
 
+#ifdef SSE_OPTIMIZE
+			typedef void (*_Func_Ptr)(unsigned char*, unsigned char const*, intptr_t, int, int, int);
+			_Func_Ptr resample_linear_line = nBpp == 8 ? resample_linear_8_line : resample_linear_24_line;
+			resample_linear_line(p_dst, pbySrc + nSrcW * iy * nOffset, nSrcW * nOffset, fy, kx, nDstW);
+#else
             for (w = 0; w < nDstW; w++)
             {
                 tmp = w * kx;
@@ -249,7 +254,7 @@ void XhDccsBase::RspImgLinear(const BYTE* pbySrc, const SIZE& szSrc,
 
                 }
             }
-
+#endif
             p_dst += nDstW * nOffset;
         }
     }

@@ -403,3 +403,187 @@ void resample_nearest_line(unsigned char* des, unsigned char const* src, int byt
 
 	}
 }
+
+decl_align(long long, 16, resampleIdx[2]) = { 0, 1 };
+decl_align(long long, 16, resampleStep[2]) = { 2, 2 };
+void resample_linear_8_line(unsigned char* des, unsigned char const* src, intptr_t stride, int fy, int kx, int width)
+{
+	__asm
+	{
+		mov			edi_ptr, des;
+		mov			esi_ptr, src;
+		movsxd		eax_ptr, width;
+		movd		xmm0, kx;
+		movd		xmm1, fy;
+		movdqa		xmm2, resampleIdx;
+		shufpd		xmm0, xmm0, 0;
+		pshuflw		xmm1, xmm1, 0;
+		sub			eax_ptr, 2;
+		jl			loop_1;
+	loop_2:
+		movdqa		xmm3, xmm2;
+		pmuludq		xmm3, xmm0;
+		movdqa		xmm4, xmm3;
+		psrlq		xmm3, 15;
+		pextrw		ecx_ptr, xmm3, 0;
+		pextrw		edx_ptr, xmm3, 4;
+		psllq		xmm3, 15;
+		psubq		xmm4, xmm3;
+		pxor		xmm5, xmm5;
+		pinsrw		xmm6, [esi_ptr + ecx_ptr], 0;
+		pinsrw		xmm6, [esi_ptr + edx_ptr], 1;
+		add			ecx_ptr, stride;
+		add			edx_ptr, stride;
+		pinsrw		xmm7, [esi_ptr + ecx_ptr], 0;
+		pinsrw		xmm7, [esi_ptr + edx_ptr], 1;
+		punpcklbw	xmm6, xmm5;
+		punpcklbw	xmm7, xmm5;
+		shufps		xmm4, xmm4, 8;
+		pshuflw		xmm3, xmm4, 0xa0;	// fx
+		psubsw		xmm7, xmm6;
+		movdqa		xmm4, xmm3;
+		psllw		xmm4, 1;
+		pmulhuw		xmm4, xmm1;	// fxy
+		psllw		xmm7, 7;
+		psllw		xmm6, 7;
+		movdqa		xmm5, xmm7;
+		pmulhw		xmm7, xmm4;
+		pmulhw		xmm5, xmm1;
+		movdqa		xmm4, xmm7;
+		psrld		xmm7, 16;
+		psubsw		xmm5, xmm4;
+		paddsw		xmm5, xmm7;
+		movdqa		xmm7, xmm6;
+		psrld		xmm6, 16;
+		psubsw		xmm6, xmm7;
+		psrlw		xmm7, 1;
+		pmulhw		xmm6, xmm3;
+		paddsw		xmm5, xmm6;
+		paddsw		xmm5, xmm7;
+		psraw		xmm5, 6;
+		packuswb	xmm5, xmm5;
+		movd		edx_ptr, xmm5;
+		mov			[edi_ptr], dx;
+		paddq		xmm2, resampleStep;
+		add			edi_ptr, 2;
+		sub			eax_ptr, 2;
+		jge			loop_2;
+	loop_1:
+		add			eax_ptr, 2;
+		jz			loop_end;
+		movdqa		xmm3, xmm2;
+		pmuludq		xmm3, xmm0;
+		movdqa		xmm4, xmm3;
+		psrlq		xmm3, 15;
+		pextrw		ecx_ptr, xmm3, 0;
+		psllq		xmm3, 15;
+		psubq		xmm4, xmm3;
+		pxor		xmm5, xmm5;
+		pinsrw		xmm6, [esi_ptr + ecx_ptr], 0;
+		add			ecx_ptr, stride;
+		pinsrw		xmm7, [esi_ptr + ecx_ptr], 0;
+		punpcklbw	xmm6, xmm5;
+		punpcklbw	xmm7, xmm5;
+		shufps		xmm4, xmm4, 8;
+		pshuflw		xmm3, xmm4, 0xa0;	// fx
+		psubsw		xmm7, xmm6;
+		movdqa		xmm4, xmm3;
+		psllw		xmm4, 1;
+		pmulhuw		xmm4, xmm1;	// fxy
+		psllw		xmm7, 7;
+		psllw		xmm6, 7;
+		movdqa		xmm5, xmm7;
+		pmulhw		xmm7, xmm4;
+		pmulhw		xmm5, xmm1;
+		movdqa		xmm4, xmm7;
+		psrld		xmm7, 16;
+		psubsw		xmm5, xmm4;
+		paddsw		xmm5, xmm7;
+		movdqa		xmm7, xmm6;
+		psrld		xmm6, 16;
+		psubsw		xmm6, xmm7;
+		psrlw		xmm7, 1;
+		pmulhw		xmm6, xmm3;
+		paddsw		xmm5, xmm6;
+		paddsw		xmm5, xmm7;
+		psraw		xmm5, 6;
+		packuswb	xmm5, xmm5;
+		movd		edx_ptr, xmm5;
+		mov			[edi_ptr], dl;
+	loop_end:
+	}
+}
+
+void resample_linear_24_line(unsigned char* des, unsigned char const* src, intptr_t stride, int fy, int kx, int width)
+{
+	__asm
+	{
+		mov			edi_ptr, des;
+		mov			esi_ptr, src;
+		xor			ebx, ebx;
+		movd		xmm0, fy;
+		pshuflw		xmm0, xmm0, 0;
+		shufpd		xmm0, xmm0, 0;
+		pxor		xmm7, xmm7;
+	loop_1:
+		cmp			ebx, width;
+		jae			loop_end;
+		mov			eax, ebx;
+		mul			kx;
+		mov			ecx, eax;
+		shr			eax, 15;
+		movsxd		edx_ptr, eax;
+		shl			eax, 15;
+		sub			ecx, eax;
+		mov			eax, ecx;
+		push		edx_ptr;
+		mul			fy;
+		pop			edx_ptr;
+		shr			eax, 15;
+		movd		xmm3, eax;
+		movd		xmm4, fy;
+		movd		xmm5, ecx;
+		mov			eax_ptr, edx_ptr;
+		add			edx_ptr, edx_ptr;
+		add			edx_ptr, eax_ptr; 
+		movd		xmm1, [esi_ptr + edx_ptr];
+		pinsrw		xmm1, [esi_ptr + edx_ptr + 4], 2;
+		add			edx_ptr, stride;
+		movd		xmm2, [esi_ptr + edx_ptr];
+		pinsrw		xmm2, [esi_ptr + edx_ptr + 4], 2;
+		punpcklbw	xmm1, xmm7;
+		punpcklbw	xmm2, xmm7;
+		shufps		xmm1, xmm1, 0x94;
+		shufps		xmm2, xmm2, 0x94;
+		pshufhw		xmm1, xmm1, 111001b;
+		pshufhw		xmm2, xmm2, 111001b;
+		psllw		xmm1, 7;
+		psllw		xmm2, 7;
+		pshuflw		xmm3, xmm3, 0;
+		pshuflw		xmm4, xmm4, 0;
+		pshuflw		xmm5, xmm5, 0;
+		psubsw		xmm2, xmm1;
+		shufpd		xmm3, xmm3, 0;
+		movhlps		xmm6, xmm1;
+		pmulhw		xmm4, xmm2;
+		pmulhw		xmm3, xmm2;
+		psubsw		xmm6, xmm1;
+		movhlps		xmm2, xmm3;
+		pmulhw		xmm6, xmm5;
+		psrlw		xmm1, 1;
+		psubsw		xmm2, xmm3;
+		paddsw		xmm2, xmm4;
+		paddsw		xmm2, xmm6;
+		paddsw		xmm1, xmm2;
+		psraw		xmm1, 6;
+		packuswb	xmm1, xmm1;
+		movd		eax_ptr, xmm1;
+		mov			[edi_ptr], ax;
+		shr			eax_ptr, 16;
+		mov			[edi_ptr + 2], al;
+		inc			ebx;
+		add			edi_ptr, 3;
+		jmp			loop_1;
+	loop_end:
+	}
+}
