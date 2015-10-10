@@ -36,6 +36,10 @@ void resample_linear_8_line(unsigned char* des, unsigned char const* src, intptr
 
 void resample_linear_24_line(unsigned char* des, unsigned char const* src, intptr_t stride, int fy, int kx, int width);
 
+void imfilter_3x3_line2(unsigned char* des, unsigned char const* src, intptr_t stride, short const coef[4], int width);
+
+void imfilter_3x3_line3(unsigned char* des, unsigned char const* src, intptr_t stride, short const coef[4], int width);
+
 #if defined(__cplusplus)
 }
 #endif

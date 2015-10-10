@@ -587,3 +587,139 @@ void resample_linear_24_line(unsigned char* des, unsigned char const* src, intpt
 	loop_end:
 	}
 }
+
+decl_align(short, 16, round5[8]) = { 16, 16, 16, 16, 16, 16, 16, 16 };
+void imfilter_3x3_line2(unsigned char* des, unsigned char const* src, intptr_t stride, short const coef[4], int width)
+{
+	__asm
+	{
+		movsxd		eax_ptr, width;
+		mov			edi_ptr, des;
+		mov			esi_ptr, src;
+		mov			ecx_ptr, stride;
+		mov			ebx_ptr, coef;
+		movsd		xmm0, [ebx_ptr];
+		pshuflw		xmm1, xmm0, 0x55;
+		pshuflw		xmm0, xmm0, 0;
+		shufpd		xmm1, xmm1, 0;
+		shufpd		xmm0, xmm0, 0;
+		pxor		xmm7, xmm7;
+		sub			eax_ptr, 8;
+		jl			loop_1_pre;
+loop_8:
+		movsd		xmm3, [esi_ptr];
+		movsd		xmm4, [esi_ptr + ecx_ptr];
+		punpcklbw	xmm3, xmm7;
+		punpcklbw	xmm4, xmm7;
+		psllw		xmm3, 7;
+		psllw		xmm4, 7;
+		pmulhw		xmm3, xmm0;
+		pmulhw		xmm4, xmm1;
+		paddsw		xmm3, xmm4;
+		paddsw		xmm3, round5;
+		psraw		xmm3, 5;
+		packuswb	xmm3, xmm3;
+		movsd		[edi_ptr], xmm3;
+		add			esi_ptr, 8;
+		add			edi_ptr, 8;
+		sub			eax_ptr, 8;
+		jge			loop_8;
+loop_1_pre:
+		add			eax_ptr, 8;
+		jz			loop_end;
+loop_1:
+		movzx		ebx_ptr, byte ptr [esi_ptr];
+		movzx		edx_ptr, byte ptr [esi_ptr + ecx_ptr];
+		movd		xmm3, ebx_ptr;
+		movd		xmm4, edx_ptr;
+		psllw		xmm3, 7;
+		psllw		xmm4, 7;
+		pmulhw		xmm3, xmm0;
+		pmulhw		xmm4, xmm1;
+		paddsw		xmm3, xmm4;
+		paddsw		xmm3, round5;
+		psraw		xmm3, 5;
+		packuswb	xmm3, xmm3;
+		movd		edx_ptr, xmm3;
+		mov			[edi_ptr], dl;
+		add			esi_ptr, 1;
+		add			edi_ptr, 1;
+		sub			eax_ptr, 1;
+		jnz			loop_1;
+loop_end:
+
+	}
+}
+
+void imfilter_3x3_line3(unsigned char* des, unsigned char const* src, intptr_t stride, short const coef[4], int width)
+{
+	__asm
+	{
+		movsxd		eax_ptr, width;
+		mov			edi_ptr, des;
+		mov			esi_ptr, src;
+		mov			ecx_ptr, stride;
+		mov			ebx_ptr, coef;
+		movsd		xmm0, [ebx_ptr];
+		pshuflw		xmm2, xmm0, 0;
+		pshuflw		xmm1, xmm0, 0x55;
+		pshuflw		xmm0, xmm0, 0xaa;
+		shufpd		xmm2, xmm2, 0;
+		shufpd		xmm1, xmm1, 0;
+		shufpd		xmm0, xmm0, 0;
+		pxor		xmm7, xmm7;
+		sub			eax_ptr, 8;
+		jl			loop_1_pre;
+	loop_8:
+		movsd		xmm3, [esi_ptr];
+		movsd		xmm4, [esi_ptr + ecx_ptr];
+		movsd		xmm5, [esi_ptr + ecx_ptr * 2];
+		punpcklbw	xmm3, xmm7;
+		punpcklbw	xmm4, xmm7;
+		punpcklbw	xmm5, xmm7;
+		psllw		xmm3, 7;
+		psllw		xmm4, 7;
+		psllw		xmm5, 7;
+		pmulhw		xmm3, xmm0;
+		pmulhw		xmm4, xmm1;
+		pmulhw		xmm5, xmm2;
+		paddsw		xmm3, xmm4;
+		paddsw		xmm3, xmm5;
+		paddsw		xmm3, round5;
+		psraw		xmm3, 5;
+		packuswb	xmm3, xmm3;
+		movsd		[edi_ptr], xmm3;
+		add			esi_ptr, 8;
+		add			edi_ptr, 8;
+		sub			eax_ptr, 8;
+		jge			loop_8;
+loop_1_pre:
+		add			eax_ptr, 8;
+		jz			loop_end;
+loop_1:
+		movzx		ebx_ptr, byte ptr [esi_ptr];
+		movzx		edx_ptr, byte ptr [esi_ptr + ecx_ptr];
+		movd		xmm3, ebx_ptr;
+		movd		xmm4, edx_ptr;
+		movzx		ebx_ptr, byte ptr [esi_ptr + ecx_ptr * 2];
+		movd		xmm5, ebx_ptr;
+		psllw		xmm3, 7;
+		psllw		xmm4, 7;
+		psllw		xmm5, 7;
+		pmulhw		xmm3, xmm0;
+		pmulhw		xmm4, xmm1;
+		pmulhw		xmm5, xmm2;
+		paddsw		xmm3, xmm4;
+		paddsw		xmm3, xmm5;
+		paddsw		xmm3, round5;
+		psraw		xmm3, 5;
+		packuswb	xmm3, xmm3;
+		movd		edx_ptr, xmm3;
+		mov			[edi_ptr], dl;
+		add			esi_ptr, 1;
+		add			edi_ptr, 1;
+		sub			eax_ptr, 1;
+		jnz			loop_1;
+	loop_end:
+	}
+}

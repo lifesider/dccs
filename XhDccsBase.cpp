@@ -334,6 +334,55 @@ void XhDccsBase::ImgFilter(const BYTE* pbySrc, const SIZE& szSrc, int nBpp,
     assert(pbyDst);    
     assert(pdbKernel);
     assert(nBpp == 8 || nBpp == 24);
+	
+#ifdef SSE_OPTIMIZE
+	int channels = nBpp >> 3;
+	if (szSrc.cy == 1)
+	{
+		double coef = pdbKernel[3] + pdbKernel[4] + pdbKernel[5];
+		for (int i = channels; i < szSrc.cx*channels; ++i)
+			*pbyDst++ = (BYTE)(pbySrc[i] * coef + 0.5);
+		for (int i = 0; i < channels; ++i)
+			*pbyDst++ = 0;
+	}
+	else if (szSrc.cy == 2)
+	{
+		short coef[4];
+		coef[0] = (short)((pdbKernel[0] + pdbKernel[1] + pdbKernel[2]) * 16384 + 0.5);
+		coef[1] = (short)((pdbKernel[3] + pdbKernel[4] + pdbKernel[5]) * 16384 + 0.5);
+		coef[2] = (short)((pdbKernel[6] + pdbKernel[7] + pdbKernel[8]) * 16384 + 0.5);
+		int stride = (szSrc.cx - 1) * channels;
+		imfilter_3x3_line2(pbyDst, pbySrc + channels, szSrc.cx*channels, coef, stride);
+		for (int i = 0; i < channels; ++i)
+			pbyDst[stride + i] = 0;
+		pbyDst += stride + channels;
+		short __coef[4] = { coef[1], coef[2] };
+		imfilter_3x3_line2(pbyDst, pbySrc + channels, szSrc.cx*channels, __coef, stride);
+		for (int i = 0; i < channels; ++i)
+			pbyDst[stride + i] = 0;
+	}
+	else
+	{
+		short coef[4];
+		coef[0] = (short)((pdbKernel[0] + pdbKernel[1] + pdbKernel[2]) * 16384 + 0.5);
+		coef[1] = (short)((pdbKernel[3] + pdbKernel[4] + pdbKernel[5]) * 16384 + 0.5);
+		coef[2] = (short)((pdbKernel[6] + pdbKernel[7] + pdbKernel[8]) * 16384 + 0.5);
+		int stride = (szSrc.cx - 1) * channels;
+		imfilter_3x3_line2(pbyDst, pbySrc+ channels, szSrc.cx*channels, coef, stride);
+		for (int i = 0; i < channels; ++i)
+			pbyDst[stride + i] = 0;
+		pbyDst += stride + channels;
+		for (int i = 1; i < szSrc.cy; ++i)
+		{
+			imfilter_3x3_line3(pbyDst, pbySrc + channels, szSrc.cx*channels, coef, stride);
+			for (int i = 0; i < channels; ++i)
+				pbyDst[stride + i] = 0;
+			pbyDst += stride + channels;
+			pbySrc += stride + channels;
+		}
+	}
+	return;
+#endif
 
     // 初始化卷积结果图像
     SIZE    szPadded  = {szSrc.cx + 2, szSrc.cy + 2};
