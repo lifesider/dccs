@@ -723,3 +723,120 @@ loop_1:
 	loop_end:
 	}
 }
+
+size_t calccnt8_eq_sse2(unsigned char* src, int val, size_t count)
+{
+	size_t cnt;
+	__asm
+	{
+		mov			esi_ptr, src;
+		mov			eax_ptr, count;
+		xor			ecx_ptr, ecx_ptr;
+		movd		xmm0, val;
+		pxor		xmm7, xmm7;
+		pshuflw		xmm0, xmm0, 0;
+		shufpd		xmm0, xmm0, 0;
+		packuswb	xmm0, xmm0;
+		sub			eax_ptr, 16;
+		jl			loop_1_pre;
+loop_16:
+		movdqu		xmm1, [esi_ptr];
+		pcmpeqb		xmm1, xmm0;
+		pmovmskb	edi_ptr, xmm1;
+		popcnt		edx_ptr, edi_ptr;
+		add			ecx_ptr, edx_ptr;
+		add			esi_ptr, 16;
+		sub			eax_ptr, 16;
+		jge			loop_16;
+loop_1_pre:
+		mov			cnt, ecx_ptr;
+		add			eax_ptr, 16;
+		jz			loop_end;
+		mov			ecx_ptr, 1;
+loop_1:
+		movzx		edx_ptr, byte ptr [esi_ptr];
+		xor			edi_ptr, edi_ptr;
+		cmp			edx, val;
+		cmove		edi_ptr, ecx_ptr;
+		add			cnt, edi_ptr;
+		inc			esi_ptr;
+		dec			eax_ptr;
+		jnz			loop_1;
+loop_end:
+	}
+	return cnt;
+}
+
+decl_align(int, 16, char1[4]) = {0x01010101, 0x01010101, 0x01010101, 0x01010101};
+void calccnt8_ver_sse2(int* des, unsigned char* src, intptr_t stride, int height)
+{
+	__asm
+	{
+		movsxd		eax_ptr, height;
+		mov			edi_ptr, des;
+		mov			esi_ptr, src;
+		mov			ecx_ptr, stride;
+		mov			edx_ptr, ecx_ptr;
+		add			ecx_ptr, ecx_ptr;
+		pxor		xmm0, xmm0;
+		pxor		xmm1, xmm1;
+		pxor		xmm7, xmm7;
+		sub			eax_ptr, 255;
+		jl			loop_1_pre;
+loop_255:
+		pxor		xmm6, xmm6;
+		mov			ebx_ptr, 127;
+loop_255_2:
+		movdqu		xmm4, [esi_ptr];
+		movdqu		xmm5, [esi_ptr + edx_ptr];
+		pcmpeqb		xmm4, xmm7;
+		pcmpeqb		xmm5, xmm7;
+		pand		xmm4, char1;
+		pand		xmm5, char1;
+		paddb		xmm6, xmm4;
+		paddb		xmm6, xmm5;
+		add			esi_ptr, ecx_ptr;
+		dec			ebx_ptr;
+		jnz			loop_255_2;
+		movdqu		xmm4, [esi_ptr];
+		pcmpeqb		xmm4, xmm7;
+		pand		xmm4, char1;
+		paddb		xmm6, xmm4;
+		movdqa		xmm4, xmm6;
+		punpcklbw	xmm4, xmm7;
+		punpckhbw	xmm6, xmm7;
+		paddw		xmm0, xmm4;
+		paddw		xmm1, xmm6;
+		add			esi_ptr, edx_ptr;
+		sub			eax_ptr, 255;
+		jge			loop_255;
+loop_1_pre:
+		add			eax_ptr, 255;
+		jz			loop_end;
+		pxor		xmm6, xmm6;
+loop_1:
+		movdqu		xmm4, [esi_ptr];
+		pcmpeqb		xmm4, xmm7;
+		pand		xmm4, char1;
+		paddb		xmm6, xmm4;
+		add			esi_ptr, edx_ptr;
+		dec			eax_ptr;
+		jnz			loop_1;
+		movdqa		xmm4, xmm6;
+		punpcklbw	xmm4, xmm7;
+		punpckhbw	xmm6, xmm7;
+		paddw		xmm0, xmm4;
+		paddw		xmm1, xmm6;
+loop_end:
+		movdqa		xmm2, xmm0;
+		movdqa		xmm3, xmm1;
+		punpcklwd	xmm0, xmm7;
+		punpckhwd	xmm2, xmm7;
+		punpcklwd	xmm1, xmm7;
+		punpckhwd	xmm3, xmm7;
+		movdqu		[edi_ptr], xmm0;
+		movdqu		[edi_ptr + 16], xmm2;
+		movdqu		[edi_ptr + 32], xmm1;
+		movdqu		[edi_ptr + 48], xmm3;
+	}
+}

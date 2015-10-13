@@ -1358,7 +1358,11 @@ void XhDccsBase::BwProjection(const BYTE* pbyBinary, const SIZE& szBinary, int n
 
         for (int j = 0; j < szBinary.cy; j++)
         {
+#ifdef SSE_OPTIMIZE
+			pnProj[j] = szBinary.cx - (int)calccnt8_eq_sse2((PBYTE)pCol, byBackPtVal, szBinary.cx);
+#else
             pnProj[j] = szBinary.cx - std::count(pCol, pCol + szBinary.cx, byBackPtVal);  // 与一行像素个数减去背景点数
+#endif
             pCol     += szBinary.cx;
         }
     }
@@ -1370,6 +1374,22 @@ void XhDccsBase::BwProjection(const BYTE* pbyBinary, const SIZE& szBinary, int n
             memset(pnProj, 0, nProjLen * sizeof(*pnProj));
             int			 i, j;     
 
+#ifdef SSE_OPTIMIZE
+			for(i=szBinary.cx-16; i>=0; i-=16, pCol+=16, pnProj+=16)
+			{
+				calccnt8_ver_sse2(pnProj, pCol, szBinary.cx, szBinary.cy);
+			}
+			if((i+=16) > 0)
+			{
+				for(int k=0; k<i; ++k, pCol++)
+				{
+					PBYTE const pi = pCol;
+					for(j=0; j<szBinary.cy; ++j, pi+=szBinary.cx)
+						if(*pi)
+							pnProj[k]++;
+				}
+			}
+#endif
             for (i = 0; i < szBinary.cx; i++, pCol++)
             {
                 const BYTE*  pi = pCol;

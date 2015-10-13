@@ -10,6 +10,7 @@
 #define __DccsBase__dccsbase__
 
 #include <stdio.h>
+#include <stddef.h>
 
 #ifndef IN
 #define IN
@@ -39,6 +40,10 @@ void resample_linear_24_line(unsigned char* des, unsigned char const* src, intpt
 void imfilter_3x3_line2(unsigned char* des, unsigned char const* src, intptr_t stride, short const coef[4], int width);
 
 void imfilter_3x3_line3(unsigned char* des, unsigned char const* src, intptr_t stride, short const coef[4], int width);
+
+size_t calccnt8_eq_sse2(unsigned char* src, int val, size_t count);
+
+void calccnt8_ver_sse2(int* des, unsigned char* src, intptr_t stride, int height);
 
 #if defined(__cplusplus)
 }
