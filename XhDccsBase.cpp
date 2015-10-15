@@ -1377,13 +1377,13 @@ void XhDccsBase::BwProjection(const BYTE* pbyBinary, const SIZE& szBinary, int n
 #ifdef SSE_OPTIMIZE
 			for(i=szBinary.cx-16; i>=0; i-=16, pCol+=16, pnProj+=16)
 			{
-				calccnt8_ver_sse2(pnProj, pCol, szBinary.cx, szBinary.cy);
+				calccnt8_ver_sse2(pnProj, (PBYTE)pCol, szBinary.cx, szBinary.cy);
 			}
 			if((i+=16) > 0)
 			{
 				for(int k=0; k<i; ++k, pCol++)
 				{
-					PBYTE const pi = pCol;
+					PBYTE pi = (PBYTE)pCol;
 					for(j=0; j<szBinary.cy; ++j, pi+=szBinary.cx)
 						if(*pi)
 							pnProj[k]++;
@@ -1427,7 +1427,7 @@ void XhDccsBase::LocProjection(const BYTE* pbyBinary, const SIZE& szBinary, int 
         for (int j = 0; j < szLoc.cy; j++)
         {
 #ifdef SSE_OPTIMIZE
-			pnProj[j] = szLoc.cx - calccnt8_eq_sse2(pCol, byBackPtVal, szLoc.cx);
+			pnProj[j] = szLoc.cx - calccnt8_eq_sse2((unsigned char*)pCol, byBackPtVal, szLoc.cx);
 #else
             pnProj[j] = szLoc.cx - std::count(pCol, pCol + szLoc.cx, byBackPtVal);  // 与一行像素个数减去背景点数
 #endif
@@ -1445,13 +1445,13 @@ void XhDccsBase::LocProjection(const BYTE* pbyBinary, const SIZE& szBinary, int 
 #ifdef SSE_OPTIMIZE
 			for(i=szLoc.cx-16; i>=0; i-=16, pCol+=16, pnProj+=16)
 			{
-				calccnt8_ver_sse2(pnProj, pCol, szBinary.cx, szLoc.cy);
+				calccnt8_ver_sse2(pnProj, (PBYTE)pCol, szBinary.cx, szLoc.cy);
 			}
 			if((i+=16) > 0)
 			{
 				for(int k=0; k<i; ++k, pCol++)
 				{
-					PBYTE const pi = pCol;
+					PBYTE pi = (PBYTE)pCol;
 					for(j=0; j<szLoc.cy; ++j, pi+=szBinary.cx)
 						if(*pi)
 							pnProj[k]++;

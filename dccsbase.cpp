@@ -39,12 +39,6 @@
 
 #endif
 
-#if defined(_WIN32) || defined(_WINDOWS)
-#define decl_align(type, n, var)	__declspec(align(n)) ##type var
-#else
-#define decl_align(type, n, var)	type var __attribute__((aligned(n)))
-#endif
-
 // scale by 1024
 decl_align(short, 16, coefBGR[8]) = { 117, 601, 306, 0, 0, 117, 601, 306};
 void rgb2gray_s_sse2(OUT unsigned char* gray, IN unsigned char const* rgb, IN int count)
@@ -141,6 +135,7 @@ void rgb2gray_f_sse2(OUT unsigned char* gray, IN unsigned char const* rgb, IN in
         pshufd      xmm3, xmm1, 1001b;
         shufps      xmm4, xmm2, 11b;
         pshuflw     xmm3, xmm3, 111001b;
+		shufps		xmm4, xmm4, 8;
         pshuflw     xmm2, xmm2, 111001b;
         punpcklbw   xmm1, xmm0;
         punpcklbw   xmm3, xmm0;

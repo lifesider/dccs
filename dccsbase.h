@@ -17,6 +17,12 @@
 #define OUT
 #endif
 
+#if defined(_WIN32) || defined(_WINDOWS)
+#define decl_align(type, n, var)	__declspec(align(n)) ##type var
+#else
+#define decl_align(type, n, var)	type var __attribute__((aligned(n)))
+#endif
+
 #if defined(__cplusplus)
 extern "C" {
 #endif
@@ -27,7 +33,7 @@ void rgb2gray_f_sse2(OUT unsigned char* gray, IN unsigned char const* rgb, IN in
   
 void get_gr_channel_sse2(unsigned char* green, unsigned char* red, unsigned char const* bgr, int count);
     
-void gray2binary(unsigned char* binary, unsigned char const* gray, int count);
+void gray2binary(unsigned char* binary, unsigned char const* gray, int threshold, int count);
     
 double dotproduct_d(double const* src1, double const* src2, int count);
     
