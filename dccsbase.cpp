@@ -285,7 +285,7 @@ void gray2binary(unsigned char* binary, unsigned char const* gray, int threshold
         jge         loop_16;
     loop_1_pre:
         add         eax_ptr, 16;
-        jz          loop_1;
+        jz          loop_end;
         mov         ebx_ptr, 255;
     loop_1:
         movzx       ecx_ptr, byte ptr [esi_ptr];
