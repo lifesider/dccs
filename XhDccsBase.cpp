@@ -283,32 +283,59 @@ void XhDccsBase::RspImgNN(const BYTE* pbySrc, const SIZE& szSrc, int nBpp,
 
     int         i, j;
 
-#ifdef SSE_OPTIMIZE
-	decl_align(float, 16, coef[4]);
-	coef[0] = (float)(dbRX * 0.5);
-	coef[1] = coef[0] + (float)dbRX;
-	coef[2] = coef[1] + (float)dbRX;
-	coef[3] = coef[2] + (float)dbRX;
-	double step = coef[0] + coef[3];
-	for (int j = 0; j < nH; j++, po += nW * (nBpp >> 3))
-	{
-		pRow = pi - (int)(dbRY * (dbOffsetY - j)) * nRowBufLen;
-		resample_nearest_line(po, pRow, nBpp >> 3, coef, step, nW);
-	}
-	return;
-#endif
     if (nBpp == 24)
     {
         for (j = 0; j < nH; j++)
         {
             pRow       = pi - (int)(dbRY * (dbOffsetY - j)) * nRowBufLen;   // 最近邻行
-
+#ifdef SSE_OPTIMIZE
+			__m128i xmm0 = _mm_set_epi32(3, 2, 1, 0);
+			static __m128i xmm1 = _mm_set_epi32(4, 4, 4, 4);
+			static __m128 xmm2 = _mm_set_ps(0.5f, 0.5f, 0.5f, 0.5f);
+			__m128 xmm7 = _mm_set_ps((float)dbRX, (float)dbRX, (float)dbRX, (float)dbRX);
+			for(i=nW-4; i>=0; i-=4)
+			{
+				__m128i xmm3 = _mm_cvttps_epi32(_mm_mul_ps(_mm_add_ps(_mm_cvtepi32_ps(xmm0), xmm2), xmm7));
+				xmm3 = _mm_add_epi32(xmm3, _mm_add_epi32(xmm3, xmm3));
+				int offs = _mm_cvtsi128_si32(xmm3);
+				xmm3 = _mm_shuffle_epi32(xmm3, 0x39);
+				*(unsigned short*)po = *(unsigned short*)(pRow + offs);
+				*(po+2) = *(pRow + offs + 2);
+				po += 3;
+				offs = _mm_cvtsi128_si32(xmm3);
+				xmm3 = _mm_shuffle_epi32(xmm3, 9);
+				*(unsigned short*)po = *(unsigned short*)(pRow + offs);
+				*(po+2) = *(pRow + offs + 2);
+				po += 3;
+				offs = _mm_cvtsi128_si32(xmm3);
+				xmm3 = _mm_shuffle_epi32(xmm3, 1);
+				*(unsigned short*)po = *(unsigned short*)(pRow + offs);
+				*(po+2) = *(pRow + offs + 2);
+				po += 3;
+				offs = _mm_cvtsi128_si32(xmm3);
+				*(unsigned short*)po = *(unsigned short*)(pRow + offs);
+				*(po+2) = *(pRow + offs + 2);
+				po += 3;
+				xmm0 = _mm_add_epi32(xmm0, xmm1);
+			}
+			if((i = (nW & 3)) > 0)
+			{
+				while (i > 0)
+				{
+					pCol = pRow + (int)(dbRX * (xmm0.m128i_i32[0] + 0.5)) * 3;
+					*(short*)po = *(short*)pCol;
+					*(po+2) = *(pCol+2);
+					po+=3;
+				}
+			}
+#else
             for (i = 0; i < nW; i++)
             {
                 pCol   = pRow + (int)(dbRX * (i + 0.5)) * 3;     // 最近邻行与最近邻列交叉处（找到最近邻点）
                 CopyMemory(po, pCol, 3);                         // 复制最近邻点的像素值
                 po     += 3;
             }
+#endif
         }
     }
     else
@@ -317,11 +344,42 @@ void XhDccsBase::RspImgNN(const BYTE* pbySrc, const SIZE& szSrc, int nBpp,
         {
             pRow       = pi - (int)(dbRY * (dbOffsetY - j)) * nRowBufLen;   // 最近邻行
 
-            for (i = 0; i < nW; i++, po++)
+#ifdef SSE_OPTIMIZE
+			__m128i xmm0 = _mm_set_epi32(3, 2, 1, 0);
+			static __m128i xmm1 = _mm_set_epi32(4, 4, 4, 4);
+			static __m128 xmm2 = _mm_set_ps(0.5f, 0.5f, 0.5f, 0.5f);
+			__m128 xmm7 = _mm_set_ps((float)dbRX, (float)dbRX, (float)dbRX, (float)dbRX);
+			for(i=nW-4; i>=0; i-=4)
+			{
+				__m128i xmm3 = _mm_cvttps_epi32(_mm_mul_ps(_mm_add_ps(_mm_cvtepi32_ps(xmm0), xmm2), xmm7));
+				int offs = _mm_cvtsi128_si32(xmm3);
+				xmm3 = _mm_shuffle_epi32(xmm3, 0x39);
+				*po++ = *(pRow + offs);
+				offs = _mm_cvtsi128_si32(xmm3);
+				xmm3 = _mm_shuffle_epi32(xmm3, 9);
+				*po++ = *(pRow + offs);
+				offs = _mm_cvtsi128_si32(xmm3);
+				xmm3 = _mm_shuffle_epi32(xmm3, 1);
+				*po++ = *(pRow + offs );
+				offs = _mm_cvtsi128_si32(xmm3);
+				*po++ = *(pRow + offs);
+				xmm0 = _mm_add_epi32(xmm0, xmm1);
+			}
+			if((i = (nW & 3)) > 0)
+			{
+				while (i > 0)
+				{
+					pCol = pRow + (int)(dbRX * (xmm0.m128i_i32[0] + 0.5));
+					*po++ = *pCol;
+				}
+			}
+#else
+           for (i = 0; i < nW; i++, po++)
             {
                 pCol   = pRow + (int)(dbRX * (i + 0.5));    // 最近邻行与最近邻列交叉处（找到最近邻点）
                 *po    = *pCol;                             // 复制最近邻点的像素值
             }
+#endif
         }
     }
 }
