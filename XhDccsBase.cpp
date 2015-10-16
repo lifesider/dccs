@@ -372,14 +372,18 @@ void XhDccsBase::ImgFilter(const BYTE* pbySrc, const SIZE& szSrc, int nBpp,
 		for (int i = 0; i < channels; ++i)
 			pbyDst[stride + i] = 0;
 		pbyDst += stride + channels;
-		for (int i = 1; i < szSrc.cy; ++i)
+		for (int i = 1; i < szSrc.cy-1; ++i)
 		{
 			imfilter_3x3_line3(pbyDst, pbySrc + channels, szSrc.cx*channels, coef, stride);
-			for (int i = 0; i < channels; ++i)
-				pbyDst[stride + i] = 0;
+			for (int j = 0; j < channels; ++j)
+				pbyDst[stride + j] = 0;
 			pbyDst += stride + channels;
 			pbySrc += stride + channels;
 		}
+		short __coef[4] = { coef[1], coef[2] };
+		imfilter_3x3_line2(pbyDst, pbySrc + channels, szSrc.cx*channels, __coef, stride);
+		for (int i = 0; i < channels; ++i)
+			pbyDst[stride + i] = 0;
 	}
 	return;
 #endif
