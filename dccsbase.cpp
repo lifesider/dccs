@@ -660,6 +660,7 @@ loop_1:
 	}
 }
 
+decl_align(int, 16, bit0Mask[4]) = {0x01010101, 0x01010101, 0x01010101, 0x01010101};
 size_t calccnt8_eq_sse2(unsigned char* src, int val, size_t count)
 {
 	size_t cnt;
@@ -678,8 +679,16 @@ size_t calccnt8_eq_sse2(unsigned char* src, int val, size_t count)
 loop_16:
 		movdqu		xmm1, [esi_ptr];
 		pcmpeqb		xmm1, xmm0;
-		pmovmskb	edi_ptr, xmm1;
-		popcnt		edx_ptr, edi_ptr;
+		pand		xmm1, bit0Mask;
+		movhlps		xmm3, xmm1;
+		paddb		xmm1, xmm3;
+		pshufd		xmm3, xmm1, 1;
+		paddb		xmm1, xmm3;
+		pshuflw		xmm3, xmm1, 1;
+		paddb		xmm1, xmm3;
+		movd		edx_ptr, xmm1;
+		add			dl, dh;
+		and			edx_ptr, 0xff;
 		add			ecx_ptr, edx_ptr;
 		add			esi_ptr, 16;
 		sub			eax_ptr, 16;
@@ -703,7 +712,6 @@ loop_end:
 	return cnt;
 }
 
-decl_align(int, 16, char1[4]) = {0x01010101, 0x01010101, 0x01010101, 0x01010101};
 void calccnt8_ver_sse2(int* des, unsigned char* src, intptr_t stride, int height)
 {
 	__asm
@@ -727,8 +735,8 @@ loop_255_2:
 		movdqu		xmm5, [esi_ptr + edx_ptr];
 		pcmpeqb		xmm4, xmm7;
 		pcmpeqb		xmm5, xmm7;
-		pand		xmm4, char1;
-		pand		xmm5, char1;
+		pand		xmm4, bit0Mask;
+		pand		xmm5, bit0Mask;
 		paddb		xmm6, xmm4;
 		paddb		xmm6, xmm5;
 		add			esi_ptr, ecx_ptr;
@@ -736,7 +744,7 @@ loop_255_2:
 		jnz			loop_255_2;
 		movdqu		xmm4, [esi_ptr];
 		pcmpeqb		xmm4, xmm7;
-		pand		xmm4, char1;
+		pand		xmm4, bit0Mask;
 		paddb		xmm6, xmm4;
 		movdqa		xmm4, xmm6;
 		punpcklbw	xmm4, xmm7;
@@ -753,7 +761,7 @@ loop_1_pre:
 loop_1:
 		movdqu		xmm4, [esi_ptr];
 		pcmpeqb		xmm4, xmm7;
-		pand		xmm4, char1;
+		pand		xmm4, bit0Mask;
 		paddb		xmm6, xmm4;
 		add			esi_ptr, edx_ptr;
 		dec			eax_ptr;
