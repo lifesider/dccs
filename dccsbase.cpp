@@ -397,6 +397,7 @@ void resample_linear_8_line(unsigned char* des, unsigned char const* src, intptr
 		paddsw		xmm5, xmm6;
 		paddsw		xmm5, xmm7;
 		psraw		xmm5, 6;
+		pshuflw		xmm5, xmm5, 8;
 		packuswb	xmm5, xmm5;
 		movd		edx_ptr, xmm5;
 		mov			[edi_ptr], dx;
@@ -443,6 +444,7 @@ void resample_linear_8_line(unsigned char* des, unsigned char const* src, intptr
 		paddsw		xmm5, xmm6;
 		paddsw		xmm5, xmm7;
 		psraw		xmm5, 6;
+		pshuflw		xmm5, xmm5, 8;
 		packuswb	xmm5, xmm5;
 		movd		edx_ptr, xmm5;
 		mov			[edi_ptr], dl;
