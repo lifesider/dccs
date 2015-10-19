@@ -786,3 +786,55 @@ loop_end:
 		movdqu		[edi_ptr + 48], xmm3;
 	}
 }
+
+decl_align(float, 16, fInv255[4]) = {1.f/255, 1.f/255, 1.f/255, 1.f/255};
+void ucharnorm2double_sse2(OUT double *des, IN unsigned char const*src, IN size_t count)
+{
+	__asm {
+		mov			esi_ptr, src;
+		mov			ecx_ptr, count;
+		mov			edi_ptr, des;
+		movaps		xmm0, fInv255;
+		xorps		xmm1, xmm1;
+		sub			ecx_ptr, 8;
+		jl			loop_1_pre;
+loop_8:
+		movsd		xmm2, [esi_ptr];
+		punpcklbw	xmm2, xmm1;
+		movaps		xmm3, xmm2;
+		punpcklwd	xmm2, xmm1;
+		punpckhwd	xmm3, xmm1;
+		cvtdq2ps	xmm2, xmm2;
+		cvtdq2ps	xmm3, xmm3;
+		mulps		xmm2, xmm0;
+		mulps		xmm3, xmm0;
+		movhlps		xmm4, xmm2;
+		movhlps		xmm5, xmm3;
+		cvtps2pd	xmm2, xmm2;
+		cvtps2pd	xmm4, xmm4;
+		cvtps2pd	xmm3, xmm3;
+		cvtps2pd	xmm5, xmm5;
+		movups		[edi_ptr], xmm2;
+		movups		[edi_ptr + 0x10], xmm4;
+		movups		[edi_ptr + 0x20], xmm3;
+		movups		[edi_ptr + 0x30], xmm5;
+		add			esi_ptr, 8;
+		add			edi_ptr, 0x40;
+		sub			ecx_ptr, 8;
+		jge			loop_8;
+loop_1_pre:
+		add			ecx_ptr, 8;
+		jz			loop_end;
+		cvtps2pd	xmm0, xmm0;
+loop_1:
+		movzx		eax_ptr, byte ptr [esi_ptr];
+		cvtsi2sd	xmm2, eax_ptr;
+		mulsd		xmm2, xmm0;
+		movsd		[edi_ptr], xmm2;
+		add			esi_ptr, 1;
+		add			edi_ptr, 8;
+		dec			ecx_ptr;
+		jnz			loop_1;
+loop_end:
+	}
+}

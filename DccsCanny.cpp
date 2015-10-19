@@ -26,6 +26,7 @@
 #include "StdAfx.h"
 #include <assert.h>
 #include "DccsCanny.h"
+#include "dccsbase.h"
 
 static double s_dbFactorRegon64[128] = 
 { -0.00793650793651, 0.00793650793651,
@@ -217,6 +218,10 @@ void DccsCanny::BYTE2double(const BYTE* pbImg, const SIZE& szImg, double* pdbImg
 {
     int         i, nLen = szImg.cx * szImg.cy;
 
+#ifdef SSE_OPTIMIZE
+	ucharnorm2double_sse2(pdbImg, pbImg, nLen);
+	return;
+#endif
     for (i = 0; i < nLen; i++)
     {
         *pdbImg++ = 1.0 * (*pbImg++) / 255;

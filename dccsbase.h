@@ -11,6 +11,7 @@
 
 #include <stdio.h>
 #include <stddef.h>
+#include <intrin.h>
 
 #ifndef IN
 #define IN
@@ -48,6 +49,8 @@ void imfilter_3x3_line3(unsigned char* des, unsigned char const* src, intptr_t s
 size_t calccnt8_eq_sse2(unsigned char* src, int val, size_t count);
 
 void calccnt8_ver_sse2(int* des, unsigned char* src, intptr_t stride, int height);
+
+void ucharnorm2double_sse2(OUT double *des, IN unsigned char const*src, IN size_t count);
 
 #if defined(__cplusplus)
 }
