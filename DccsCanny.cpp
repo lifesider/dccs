@@ -548,6 +548,10 @@ void DccsCanny::GaussFilter2DReplicate(const double* pdbImage, const SIZE& szImg
 void DccsCanny::GradMagnitude(const double* pdbGradX, const double* pdbGradY, 
                               const SIZE& szGrad, double* pdbMag)
 {
+#ifdef SSE_OPTIMIZE
+	nsp_calc_norm_magnitude_d(pdbMag, pdbGradX, pdbGradY, szGrad.cx * szGrad.cy);
+	return;
+#endif
     int             i,  nLen = szGrad.cx * szGrad.cy;
     const double*   px = pdbGradX;
     const double*   py = pdbGradY;
@@ -790,7 +794,28 @@ void DccsCanny::Hysteresis(const double* pdbMag, const SIZE& szMag,
     }
 
     // 那些还没有被设置为边界点的象素已经不可能成为边界点
-    po = pbEdge;
+#ifdef SSE_OPTIMIZE
+	int count = szMag.cx * szMag.cy;
+	po = (BYTE*)(((size_t)pbEdge + 15) & ~15);
+	for(int i=0; i<(int)(po-pbEdge); ++i)
+		if(pbEdge[i] != 255)
+			pbEdge[i] = 0;
+	count -= po - pbEdge;
+	__m128i xmm1 = _mm_setzero_si128();
+	xmm1 = _mm_cmpeq_epi8(xmm1, xmm1);
+	for(int i=count-16; i>=0; i -= 16, po += 16)
+	{
+		__m128i xmm0 = _mm_load_si128((__m128i*)po);
+		_mm_store_si128((__m128i*)po, _mm_cmpeq_epi8(xmm0, xmm1));
+	}
+	if(count & 15)
+	{
+		for(int i=(count&15); i>0; --i, po++)
+			if(*po != 255)
+				*po = 0;
+	}
+#else
+   po = pbEdge;
     for(y = 0; y < szMag.cy * szMag.cx; y++, po++)
     {
         if(*po != 255)
@@ -798,6 +823,7 @@ void DccsCanny::Hysteresis(const double* pdbMag, const SIZE& szMag,
             *po = 0;
         }
     }
+#endif
 
     MEMO_FREE_AND_NULL_N(ppbTmp);
 }

@@ -1089,3 +1089,111 @@ loop_end:
 	}
 	return des;
 }
+
+void dbmemgain_sse2(OUT double *des, IN double *src, IN double dGain, IN size_t count)
+{
+	__asm {
+		mov			ecx_ptr, count;
+		mov			esi_ptr, src;
+		mov			edi_ptr, des;
+		movlps		xmm7, dGain;
+		// 预取一部分的源数据到离处理器较近的 Cache 中，减少 Cache 污染，并提高命中
+		prefetchnta	byte ptr [esi_ptr];
+		movlhps		xmm7, xmm7;
+		shr			ecx_ptr, 0x03;		// 一次处理 8 个
+		jnz			loop_8;
+		jmp			loop_m4;
+loop_8:
+		// 预取一部分的源数据到离处理器较近的 Cache 中，减少 Cache 污染，并提高命中
+		prefetchnta	byte ptr [esi_ptr + 0x40];
+		movups		xmm0, [esi_ptr];
+		movups		xmm1, [esi_ptr + 0x10];
+		movups		xmm2, [esi_ptr + 0x20];
+		movups		xmm3, [esi_ptr + 0x30];
+		mulpd		xmm0, xmm7;
+		mulpd		xmm1, xmm7;
+		mulpd		xmm2, xmm7;
+		mulpd		xmm3, xmm7;
+		movups		[edi_ptr], xmm0;
+		movups		[edi_ptr + 0x10], xmm1;
+		movups		[edi_ptr + 0x20], xmm2;
+		movups		[edi_ptr + 0x30], xmm3;
+		add			esi_ptr, 0x40;
+		add			edi_ptr, 0x40;
+		sub			ecx_ptr, 0x01;
+		jnz			loop_8;
+loop_m4:
+		test		count, 0x04;
+		jz			loop_trails;
+		movups		xmm0, [esi_ptr];
+		movups		xmm1, [esi_ptr + 0x10];
+		mulpd		xmm0, xmm7;
+		mulpd		xmm1, xmm7;
+		movups		[edi_ptr], xmm0;
+		movups		[edi_ptr + 0x10], xmm1;
+		add			esi_ptr, 0x20;
+		add			edi_ptr, 0x20;
+loop_trails:
+		mov			ecx_ptr, count;
+		and			ecx_ptr, 0x03;
+		jz			loop_end;
+loop_1:
+		movlps		xmm0, [esi_ptr];
+		mulsd		xmm0, xmm7;
+		movlps		[edi_ptr], xmm0;
+		add			esi_ptr, 0x08;
+		add			edi_ptr, 0x08;
+		sub			ecx_ptr, 0x01;
+		jnz			loop_1;
+loop_end:
+	}
+}
+
+void nsp_calc_norm_magnitude_d(OUT double* magnitude,	// 归一化梯度
+							   IN double const* diffX,	// X 方向导数
+							   IN double const* diffY,	// Y 方向导数
+							   IN int count)
+{
+	double max_mag = 0;
+	__asm
+	{
+		mov			edi_ptr, magnitude;
+		mov			ecx_ptr, diffX;
+		mov			edx_ptr, diffY;
+		movsxd		esi_ptr, count;
+		xorpd		xmm0, xmm0;
+		sub			esi_ptr, 2;
+		jl			loop_1;
+loop_2:
+		movupd		xmm1, [ecx_ptr];
+		movupd		xmm2, [edx_ptr];
+		mulpd		xmm1, xmm1;
+		mulpd		xmm2, xmm2;
+		addpd		xmm1, xmm2;
+		sqrtpd		xmm1, xmm1;
+		maxpd		xmm0, xmm1;
+		movupd		[edi_ptr], xmm1;
+		add			ecx_ptr, 0x10;
+		add			edx_ptr, 0x10;
+		add			edi_ptr, 0x10;
+		sub			esi_ptr, 2;
+		jge			loop_2;
+		movhlps		xmm1, xmm0;
+		maxpd		xmm0, xmm1;
+loop_1:
+		add			esi_ptr, 2;
+		jz			loop_end;
+		movsd		xmm1, [ecx_ptr];
+		movsd		xmm2, [edx_ptr];
+		mulpd		xmm1, xmm1;
+		mulpd		xmm2, xmm2;
+		addpd		xmm1, xmm2;
+		sqrtpd		xmm1, xmm1;
+		maxpd		xmm0, xmm1;
+		movsd		[edi_ptr], xmm1;
+loop_end:
+		movsd		max_mag, xmm0;
+	}
+	if(max_mag > 0)
+		dbmemgain_sse2(magnitude, magnitude, 1.0/max_mag, count);
+}

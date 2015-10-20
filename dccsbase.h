@@ -68,6 +68,13 @@ void nsp_filter(OUT double* des,			// 滤波后输出缓冲
 
 unsigned __int64* qmemset_sse2(OUT unsigned __int64* des, IN unsigned __int64 qword_value, IN size_t qword_count);
 
+void dbmemgain_sse2(OUT double *des, IN double *src, IN double dGain, IN size_t count);
+
+void nsp_calc_norm_magnitude_d(OUT double* magnitude,	// 归一化梯度
+							   IN double const* diffX,	// X 方向导数
+							   IN double const* diffY,	// Y 方向导数
+							   IN int count);
+
 #if defined(__cplusplus)
 }
 #endif
