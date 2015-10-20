@@ -1014,3 +1014,78 @@ void nsp_filter(OUT double* des,			// 滤波后输出缓冲
 		}
 	}
 }
+
+unsigned __int64* qmemset_sse2(OUT unsigned __int64* des, IN unsigned __int64 qword_value, IN size_t qword_count)
+{
+	__asm
+	{
+		mov			ecx_ptr, qword_count;
+		movsd		xmm0, qword_value;
+		mov			edi_ptr, des;
+		mov			eax_ptr, ecx_ptr;
+		shufpd		xmm0, xmm0, 0;
+		shr			ecx_ptr, 4;	// 一次计算16个
+		jz			loop_8;
+		test		edi_ptr, 0x0f;
+		jz			loop_16a;
+		test		edi_ptr, 7;	// 没有对齐到8字节边界
+		jnz			loop_16u;
+		dec			eax_ptr;
+		movsd		[edi_ptr], xmm0;
+		mov			ecx_ptr, eax_ptr;
+		add			edi_ptr, 8;
+		shr			ecx_ptr, 4;
+		jz			loop_8;
+loop_16a:
+		movntpd		[edi_ptr], xmm0;
+		movntpd		[edi_ptr + 0x10], xmm0;
+		movntpd		[edi_ptr + 0x20], xmm0;
+		movntpd		[edi_ptr + 0x30], xmm0;
+		movntpd		[edi_ptr + 0x40], xmm0;
+		movntpd		[edi_ptr + 0x50], xmm0;
+		movntpd		[edi_ptr + 0x60], xmm0;
+		movntpd		[edi_ptr + 0x70], xmm0;
+		add			edi_ptr, 0x80;
+		dec			ecx_ptr;
+		jnz			loop_16a;
+		sfence;
+		jmp			loop_8;
+loop_16u:
+		movupd		[edi_ptr], xmm0;
+		movupd		[edi_ptr + 0x10], xmm0;
+		movupd		[edi_ptr + 0x20], xmm0;
+		movupd		[edi_ptr + 0x30], xmm0;
+		movupd		[edi_ptr + 0x40], xmm0;
+		movupd		[edi_ptr + 0x50], xmm0;
+		movupd		[edi_ptr + 0x60], xmm0;
+		movupd		[edi_ptr + 0x70], xmm0;
+		add			edi_ptr, 0x80;
+		dec			ecx_ptr;
+		jnz			loop_16u;
+loop_8:
+		test		eax_ptr, 8;
+		jz			loop_4;
+		movupd		[edi_ptr], xmm0;
+		movupd		[edi_ptr + 0x10], xmm0;
+		movupd		[edi_ptr + 0x20], xmm0;
+		movupd		[edi_ptr + 0x30], xmm0;
+		add			edi_ptr, 0x40;
+loop_4:
+		test		eax_ptr, 4;
+		jz			loop_2;
+		movupd		[edi_ptr], xmm0;
+		movupd		[edi_ptr + 0x10], xmm0;
+		add			edi_ptr, 0x20;
+loop_2:
+		test		eax_ptr, 2;
+		jz			loop_1;
+		movupd		[edi_ptr], xmm0;
+		add			edi_ptr, 0x10;
+loop_1:
+		test		eax_ptr, 1;
+		jz			loop_end;
+		movsd		[edi_ptr], xmm0;
+loop_end:
+	}
+	return des;
+}

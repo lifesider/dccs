@@ -66,6 +66,8 @@ void nsp_filter(OUT double* des,			// 滤波后输出缓冲
 				IN int width,				// 宽度
 				IN int height);				// 高度
 
+unsigned __int64* qmemset_sse2(OUT unsigned __int64* des, IN unsigned __int64 qword_value, IN size_t qword_count);
+
 #if defined(__cplusplus)
 }
 #endif

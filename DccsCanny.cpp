@@ -435,25 +435,44 @@ void DccsCanny::GaussFilter2DReplicate(const double* pdbImage, const SIZE& szImg
     double*    pi = pdbBig;
     for (i = 0; i < 4; i++)
     {
-        for (j = 0; j < szImg.cx; j++)
+#ifdef SSE_OPTIMIZE
+		memcpy(pi + 4, pdbImage, szImg.cx * sizeof(double));
+		pi += szBig.cx;
+#else
+       for (j = 0; j < szImg.cx; j++)
         {
             *(pdbBig + i * szBig.cx + j + 4) = pdbImage[j];
         }
+#endif
     }
 
     // 填入值_bot
     for (i = szBig.cy - 4; i < szBig.cy; i++)
     {
-        for (j = 0; j < szImg.cx; j++)
+#ifdef SSE_OPTIMIZE
+		memcpy(pdbBig + i * szBig.cx + 4, pdbImage + szImg.cx * (szImg.cy - 1), szImg.cx * sizeof(double));
+#else
+       for (j = 0; j < szImg.cx; j++)
         {
             *(pdbBig + i * szBig.cx + j + 4) = pdbImage[szImg.cx * (szImg.cy - 1) + j];
         }
+#endif
     }
 
     // 填入值_left/right
     pi = pdbBig;
     for (j = 4; j < 4 + szImg.cy; j++)
     {
+#ifdef SSE_OPTIMIZE
+		__m128d xmm0 = _mm_load_sd(pdbImage + (j-4)*szImg.cx);
+		xmm0 = _mm_shuffle_pd(xmm0, xmm0, 0);
+		_mm_storeu_pd(pi + j*szBig.cx, xmm0);
+		_mm_storeu_pd(pi + j*szBig.cx + 2, xmm0);
+		xmm0 = _mm_load_sd(pdbImage + (j-4)*szImg.cx + szImg.cx-1);
+		xmm0 = _mm_shuffle_pd(xmm0, xmm0, 0);
+		_mm_storeu_pd(pi + j*szBig.cx + szBig.cx - 4, xmm0);
+		_mm_storeu_pd(pi + j*szBig.cx + szBig.cx - 2, xmm0);
+#else
         for (i = 0; i < 4; i++)
         {
             *(pi + j * szBig.cx + i) = *(pdbImage + (j - 4) * szImg.cx);
@@ -463,10 +482,21 @@ void DccsCanny::GaussFilter2DReplicate(const double* pdbImage, const SIZE& szImg
         {
             *(pi + j * szBig.cx + i) = *(pdbImage + (j - 4) * szImg.cx + szImg.cx - 1);
         }
+#endif
     }
 
     for (j = 0; j < 4; j++)
     {
+#ifdef SSE_OPTIMIZE
+		__m128d xmm0 = _mm_load_sd(pdbImage);
+		xmm0 = _mm_shuffle_pd(xmm0, xmm0, 0);
+		_mm_storeu_pd(pi + j*szBig.cx, xmm0);
+		_mm_storeu_pd(pi + j*szBig.cx + 2, xmm0);
+		xmm0 = _mm_load_sd(pdbImage + szImg.cx - 1);
+		xmm0 = _mm_shuffle_pd(xmm0, xmm0, 0);
+		_mm_storeu_pd(pi + j*szBig.cx + szBig.cx - 4, xmm0);
+		_mm_storeu_pd(pi + j*szBig.cx + szBig.cx - 2, xmm0);
+#else
         for (i = 0; i < 4; i++)
         {
             *(pi + j * szBig.cx + i) = pdbImage[0];
@@ -476,11 +506,22 @@ void DccsCanny::GaussFilter2DReplicate(const double* pdbImage, const SIZE& szImg
         {
             *(pi + j * szBig.cx + i) = pdbImage[szImg.cx - 1];
         }
+#endif
     }
 
     for (j = szBig.cy - 4; j < szBig.cy; j++)
     {
-        for (i = 0; i < 4; i++)
+#ifdef SSE_OPTIMIZE
+		__m128d xmm0 = _mm_load_sd(pdbImage + szImg.cx * (szImg.cy - 1));
+		xmm0 = _mm_shuffle_pd(xmm0, xmm0, 0);
+		_mm_storeu_pd(pi + j*szBig.cx, xmm0);
+		_mm_storeu_pd(pi + j*szBig.cx + 2, xmm0);
+		xmm0 = _mm_load_sd(pdbImage + szImg.cx * (szImg.cy - 1));
+		xmm0 = _mm_shuffle_pd(xmm0, xmm0, 0);
+		_mm_storeu_pd(pi + j*szBig.cx + szBig.cx - 4, xmm0);
+		_mm_storeu_pd(pi + j*szBig.cx + szBig.cx - 2, xmm0);
+#else
+       for (i = 0; i < 4; i++)
         {
             *(pi + j * szBig.cx + i) = pdbImage[szImg.cx * (szImg.cy - 1)];
         }
@@ -489,6 +530,7 @@ void DccsCanny::GaussFilter2DReplicate(const double* pdbImage, const SIZE& szImg
         {
             *(pi + j * szBig.cx + i) = pdbImage[szImg.cx * szImg.cy - 1];
         }
+#endif
     }
 
     // 滤波
@@ -908,12 +950,25 @@ double DccsCanny::ErodeOperateImp(const double* pbStart, const SIZE& szImage,
 
     for (j = 0; j < szMask.cy; j++)
     {
+#ifdef SSE_OPTIMIZE
+		__m128d xmm0 = _mm_setzero_pd();
+		double const* __tmp = pbStart;
+		for(i=szMask.cx-2; i>=0; i-=2)
+		{
+			xmm0 = _mm_add_pd(xmm0, _mm_mul_pd(_mm_loadu_pd(pbMask), _mm_loadu_pd(__tmp)));
+			pbMask += 2;
+			__tmp += 2;
+		}
+		if(i+2 > 0)
+			xmm0 = _mm_add_sd(xmm0, _mm_mul_sd(_mm_load_sd(pbMask), _mm_load_sd(__tmp)));
+		_mm_store_sd(&bRlt, _mm_add_sd(xmm0, _mm_shuffle_pd(xmm0, xmm0, 1)));
+#else
         for (i = 0; i < szMask.cx; i++)
         {
             bMaskVal = *pbMask++;
             bRlt    += *(pbStart + i) * bMaskVal;
         }
-
+#endif
         pbStart += szImage.cx;
     }
 
