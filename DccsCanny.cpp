@@ -238,8 +238,8 @@ void DccsCanny::GaussianSmooth(const double* pdbImg, const SIZE& szImg,
     // X方向滤波
     double*   pdbFilterX  = new double [szImg.cx * szImg.cy];
 
-    GaussFilter1D_X(pdbImg, szImg, g_pdbKernel1D, nWindowHalf, pdbFilterX);
-
+	GaussFilter1D_X(pdbImg, szImg, g_pdbKernel1D, nWindowHalf, pdbFilterX);
+	
     //Y方向滤波
     GaussFilter1D_Y(pdbFilterX, szImg, g_pdbKernel1D, nWindowHalf, pdbSmthdImg);
 
@@ -251,16 +251,18 @@ void DccsCanny::GaussFilter1D_X(const double* pdbImage, const SIZE& szImg,
                                 const double* pdbFiter, const int& nHalfWinLen,
                                 double* pdbFilterImg)
 {
-#ifdef SSE_OPTIMIZE
-	nsp_filter(pdbFilterImg, pdbImage, pdbFiter, nHalfWinLen*2+1, 0, szImg.cx, szImg.cy);
-	return;
-#endif
-
     int      i, j, k;
     double   dbSum = 0;
     int nPos = 0;
     int nPosy = 0;
     int nPosK = 0;
+
+#ifdef SSE_OPTIMIZE
+	__m128d xmm0 = _mm_loadu_pd(pdbFiter);
+	__m128d xmm1 = _mm_loadu_pd(pdbFiter + 2);
+	__m128d xmm2 = _mm_loadu_pd(pdbFiter + 4);
+	__m128d xmm3 = _mm_loadu_pd(pdbFiter + 6);
+#endif
 
     for (i = 0; i < szImg.cy; i++)
     {
@@ -311,6 +313,15 @@ void DccsCanny::GaussFilter1D_X(const double* pdbImage, const SIZE& szImg,
             }
             else
             {
+#ifdef SSE_OPTIMIZE
+				__m128d xmm4 = _mm_setzero_pd();
+				xmm4 = _mm_add_pd(xmm4, _mm_mul_pd(_mm_loadu_pd(pdbImage + nPosy + j - 4), xmm0));
+				xmm4 = _mm_add_pd(xmm4, _mm_mul_pd(_mm_loadu_pd(pdbImage + nPosy + j - 2), xmm1));
+				xmm4 = _mm_add_pd(xmm4, _mm_mul_pd(_mm_loadu_pd(pdbImage + nPosy + j), xmm2));
+				xmm4 = _mm_add_pd(xmm4, _mm_mul_pd(_mm_loadu_pd(pdbImage + nPosy + j + 2), xmm3));
+				xmm4 = _mm_add_sd(xmm4, _mm_mul_sd(_mm_load_sd(pdbImage + nPosy + j + 4), _mm_load_sd(pdbFiter + 8)));
+				_mm_store_sd(pdbFilterImg + nPos, _mm_add_sd(xmm4, _mm_shuffle_pd(xmm4, xmm4, 1)));
+#else
                 dbSum += pdbImage[nPosy + (j - 4)] * pdbFiter[0];	
                 dbSum += pdbImage[nPosy + (j - 3)] * pdbFiter[1];	
                 dbSum += pdbImage[nPosy + (j - 2)] * pdbFiter[2];	
@@ -321,6 +332,7 @@ void DccsCanny::GaussFilter1D_X(const double* pdbImage, const SIZE& szImg,
                 dbSum += pdbImage[nPosy + (j + 3)] * pdbFiter[7];	
                 dbSum += pdbImage[nPosy + (j + 4)] * pdbFiter[8];	
                 pdbFilterImg[nPos] = dbSum;
+#endif
             }
         }
     }
