@@ -52,6 +52,20 @@ void calccnt8_ver_sse2(int* des, unsigned char* src, intptr_t stride, int height
 
 void ucharnorm2double_sse2(OUT double *des, IN unsigned char const*src, IN size_t count);
 
+void dmemconv(double* des, double const* src, double const* kernel, int kernel_size, int count);
+
+void dmemmul(double* des, double const* src, double weight, int count);
+
+void dmemmad(double* des, double const* src, double weight, int count);
+
+void nsp_filter(OUT double* des,			// 滤波后输出缓冲
+				IN double const* src,		// 输入缓冲
+				IN double const* kernel,	// 一维核系数缓冲
+				IN int kernel_size,			// 一维核长度
+				IN int direction,			// 0-水平，1-垂直，2-水平垂直
+				IN int width,				// 宽度
+				IN int height);				// 高度
+
 #if defined(__cplusplus)
 }
 #endif

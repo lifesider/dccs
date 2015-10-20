@@ -251,6 +251,11 @@ void DccsCanny::GaussFilter1D_X(const double* pdbImage, const SIZE& szImg,
                                 const double* pdbFiter, const int& nHalfWinLen,
                                 double* pdbFilterImg)
 {
+#ifdef SSE_OPTIMIZE
+	nsp_filter(pdbFilterImg, pdbImage, pdbFiter, nHalfWinLen*2+1, 0, szImg.cx, szImg.cy);
+	return;
+#endif
+
     int      i, j, k;
     double   dbSum = 0;
     int nPos = 0;
@@ -326,6 +331,10 @@ void DccsCanny::GaussFilter1D_Y(const double* pdbImage, const SIZE& szImg,
                                const double* pdbFiter, const int& nHalfWinLen,
                                double* pdbFilterImg)
 {
+#ifdef SSE_OPTIMIZE
+	nsp_filter(pdbFilterImg, pdbImage, pdbFiter, nHalfWinLen*2+1, 1, szImg.cx, szImg.cy);
+	return;
+#endif
     int      i, j, k;
     double   dbSum = 0;
     int nPos = 0;

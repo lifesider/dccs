@@ -7,6 +7,8 @@
 //
 
 #include "dccsbase.h"
+#include <algorithm>
+#include <numeric>
 
 #if defined(_M_X64) || defined(__x86_64__)
 
@@ -836,5 +838,179 @@ loop_1:
 		dec			ecx_ptr;
 		jnz			loop_1;
 loop_end:
+	}
+}
+
+void dmemconv(double* des, double const* src, double const* kernel, int kernel_size, int count)
+{
+	__asm
+	{
+		mov			edi_ptr, des;
+		mov			esi_ptr, src;
+		movsxd		ecx_ptr, count;
+		test		ecx_ptr, ecx_ptr;
+		jz			loop_end;
+loop_1:
+		xorpd		xmm0, xmm0;
+		movsxd		ebx_ptr, kernel_size;
+		mov			eax_ptr, kernel;
+		mov			edx_ptr, esi_ptr;
+		sub			ebx_ptr, 2;
+		jl			loop_1_1;
+loop_1_2:
+		movupd		xmm1, [edx_ptr];
+		movupd		xmm2, [eax_ptr];
+		mulpd		xmm1, xmm2;
+		addpd		xmm0, xmm1;
+		add			edx_ptr, 0x10;
+		add			eax_ptr, 0x10;
+		sub			ebx_ptr, 2;
+		jge			loop_1_2;
+		movhlps		xmm1, xmm0;
+		addsd		xmm0, xmm1;
+loop_1_1:
+		add			ebx_ptr, 2;
+		jz			loop_1_end;
+		movsd		xmm1, [edx_ptr];
+		movsd		xmm2, [eax_ptr];
+		mulsd		xmm1, xmm2;
+		addsd		xmm0, xmm1;
+loop_1_end:
+		movsd		[edi_ptr], xmm0;
+		add			esi_ptr, 8;
+		add			edi_ptr, 8;
+		dec			ecx_ptr;
+		jnz			loop_1;
+loop_end:
+	}
+}
+
+void dmemmul(double* des, double const* src, double weight, int count)
+{
+	__asm
+	{
+		mov			edi_ptr, des;
+		mov			esi_ptr, src;
+		movsd		xmm0, weight;
+		mov			eax_ptr, count;
+		shufpd		xmm0, xmm0, 0;
+		sub			eax_ptr, 2;
+		jl			loop_1;
+loop_2:
+		movupd		xmm1, [esi_ptr];
+		mulpd		xmm1, xmm0;
+		movupd		[edi_ptr], xmm1;
+		add			esi_ptr, 0x10;
+		add			edi_ptr, 0x10;
+		sub			eax_ptr, 2;
+		jge			loop_2;
+loop_1:
+		add			eax_ptr, 2;
+		jz			loop_end;
+		movsd		xmm1, [esi_ptr];
+		mulsd		xmm1, xmm0;
+		movsd		[edi_ptr], xmm1;
+loop_end:
+	}
+}
+
+void dmemmad(double* des, double const* src, double weight, int count)
+{
+	__asm
+	{
+		mov			edi_ptr, des;
+		mov			esi_ptr, src;
+		movsd		xmm0, weight;
+		mov			eax_ptr, count;
+		shufpd		xmm0, xmm0, 0;
+		sub			eax_ptr, 2;
+		jl			loop_1;
+loop_2:
+		movupd		xmm1, [esi_ptr];
+		movupd		xmm2, [edi_ptr];
+		mulpd		xmm1, xmm0;
+		addpd		xmm1, xmm2;
+		movupd		[edi_ptr], xmm1;
+		add			esi_ptr, 0x10;
+		add			edi_ptr, 0x10;
+		sub			eax_ptr, 2;
+		jge			loop_2;
+loop_1:
+		add			eax_ptr, 2;
+		jz			loop_end;
+		movsd		xmm1, [esi_ptr];
+		movsd		xmm2, [edi_ptr];
+		mulsd		xmm1, xmm0;
+		mulsd		xmm1, xmm2;
+		movsd		[edi_ptr], xmm1;
+loop_end:
+	}
+}
+
+void nsp_filter(OUT double* des,			// 滤波后输出缓冲
+				IN double const* src,		// 输入缓冲
+				IN double const* kernel,	// 一维核系数缓冲
+				IN int kernel_size,			// 一维核长度
+				IN int direction,			// 0-水平，1-垂直，2-水平垂直
+				IN int width,				// 宽度
+				IN int height)				// 高度
+{
+	int half_ker = (kernel_size - 1) >> 1;
+	if(direction == 0)
+	{
+		for(int i=0; i<height; ++i)
+		{
+			for(int k=0; k<half_ker; ++k)
+			{
+				double _Sum = src[0] * std::accumulate(kernel, kernel+half_ker-k+1, 0.0);
+				for(int j=half_ker-k+1; j<kernel_size; ++j)
+					_Sum += kernel[j]*src[j-half_ker+k];
+				des[k] = _Sum;
+			}
+			dmemconv(des + half_ker, src, kernel, kernel_size, width - kernel_size + 1);
+			for(int k=width-kernel_size/2; k<width; ++k)
+			{
+				double _Sum = (double)0;
+				for(int j=0; j<kernel_size; ++j)
+					_Sum += kernel[j]*src[std::min(width-1, k+j-half_ker)];
+				des[k] = _Sum;
+			}
+			des += width;
+			src += width;
+		}
+	}
+	else if(direction == 1)
+	{
+		for(int k=0; k<half_ker; ++k)
+		{
+			double const* _tmp = src;
+			dmemmul(des, _tmp, std::accumulate(kernel, kernel+half_ker-k+1, 0.0), width);
+			_tmp += width;
+			for(int j=half_ker-k+1; j<kernel_size; ++j, _tmp+=width)
+				dmemmad(des, _tmp, kernel[j], width);
+			des += width;
+		}
+		for(int k=half_ker; k<height-half_ker; ++k)
+		{
+			double const* _tmp = src;
+			dmemmul(des, _tmp, kernel[0], width);
+			_tmp += width;
+			for(int j=1; j<kernel_size; ++j, _tmp+=width)
+				dmemmad(des, _tmp, kernel[j], width);
+			des += width;
+			src += width;
+		}
+		for(int k=height-kernel_size/2; k<height; ++k)
+		{
+			double const* _tmp = src;
+			dmemmul(des, _tmp, kernel[0], width);
+			_tmp += width;
+			int _Len = std::min(height-1, k+kernel_size/2) - k + half_ker;
+			for(int j=1; j<_Len; ++j, _tmp+=width)
+				dmemmad(des, _tmp, kernel[j], width);
+			dmemmad(des, _tmp, std::accumulate(kernel+_Len, kernel+kernel_size, 0.0), width);
+			des += width;
+			src += width;
+		}
 	}
 }
