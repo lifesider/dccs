@@ -892,7 +892,7 @@ void dmemmul(double* des, double const* src, double weight, int count)
 		mov			edi_ptr, des;
 		mov			esi_ptr, src;
 		movsd		xmm0, weight;
-		mov			eax_ptr, count;
+		movsxd		eax_ptr, count;
 		shufpd		xmm0, xmm0, 0;
 		sub			eax_ptr, 2;
 		jl			loop_1;
@@ -921,7 +921,7 @@ void dmemmad(double* des, double const* src, double weight, int count)
 		mov			edi_ptr, des;
 		mov			esi_ptr, src;
 		movsd		xmm0, weight;
-		mov			eax_ptr, count;
+		movsxd		eax_ptr, count;
 		shufpd		xmm0, xmm0, 0;
 		sub			eax_ptr, 2;
 		jl			loop_1;

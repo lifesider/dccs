@@ -986,8 +986,8 @@ double DccsCanny::ErodeOperateImp(const double* pbStart, const SIZE& szImage,
 			__tmp += 2;
 		}
 		if(i+2 > 0)
-			xmm0 = _mm_add_sd(xmm0, _mm_mul_sd(_mm_load_sd(pbMask), _mm_load_sd(__tmp)));
-		_mm_store_sd(&bRlt, _mm_add_sd(xmm0, _mm_shuffle_pd(xmm0, xmm0, 1)));
+			xmm0 = _mm_add_sd(xmm0, _mm_mul_sd(_mm_load_sd(pbMask), _mm_load_sd(__tmp))), pbMask++;
+		_mm_store_sd(&bRlt, _mm_add_sd(_mm_load_sd(&bRlt), _mm_add_sd(xmm0, _mm_shuffle_pd(xmm0, xmm0, 1))));
 #else
         for (i = 0; i < szMask.cx; i++)
         {
