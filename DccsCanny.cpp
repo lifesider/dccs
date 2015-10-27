@@ -974,10 +974,10 @@ double DccsCanny::ErodeOperateImp(const double* pbStart, const SIZE& szImage,
     int        i, j;
     double     bMaskVal;
 
-    for (j = 0; j < szMask.cy; j++)
-    {
 #ifdef SSE_OPTIMIZE
-		__m128d xmm0 = _mm_setzero_pd();
+	__m128d xmm0 = _mm_setzero_pd();
+	for(j=0; j<szMask.cy; ++j, pbStart += szImage.cx)
+	{
 		double const* __tmp = pbStart;
 		for(i=szMask.cx-2; i>=0; i-=2)
 		{
@@ -987,14 +987,17 @@ double DccsCanny::ErodeOperateImp(const double* pbStart, const SIZE& szImage,
 		}
 		if(i+2 > 0)
 			xmm0 = _mm_add_sd(xmm0, _mm_mul_sd(_mm_load_sd(pbMask), _mm_load_sd(__tmp))), pbMask++;
-		_mm_store_sd(&bRlt, _mm_add_sd(_mm_load_sd(&bRlt), _mm_add_sd(xmm0, _mm_shuffle_pd(xmm0, xmm0, 1))));
-#else
+	}
+	return _mm_add_sd(xmm0, _mm_shuffle_pd(xmm0, xmm0, 1)).m128d_f64[0];
+#endif
+
+    for (j = 0; j < szMask.cy; j++)
+    {
         for (i = 0; i < szMask.cx; i++)
         {
             bMaskVal = *pbMask++;
             bRlt    += *(pbStart + i) * bMaskVal;
         }
-#endif
         pbStart += szImage.cx;
     }
 
