@@ -789,37 +789,37 @@ loop_end:
 	}
 }
 
-decl_align(float, 16, fInv255[4]) = {1.f/255, 1.f/255, 1.f/255, 1.f/255};
+decl_align(double, 16, dInv255[2]) = {1.0/255, 1.0/255};
 void ucharnorm2double_sse2(OUT double *des, IN unsigned char const*src, IN size_t count)
 {
 	__asm {
 		mov			esi_ptr, src;
 		mov			ecx_ptr, count;
 		mov			edi_ptr, des;
-		movaps		xmm0, fInv255;
-		xorps		xmm1, xmm1;
+		movapd		xmm0, dInv255;
+		xorpd		xmm1, xmm1;
 		sub			ecx_ptr, 8;
 		jl			loop_1_pre;
 loop_8:
 		movsd		xmm2, [esi_ptr];
 		punpcklbw	xmm2, xmm1;
-		movaps		xmm3, xmm2;
+		movapd		xmm3, xmm2;
 		punpcklwd	xmm2, xmm1;
 		punpckhwd	xmm3, xmm1;
-		cvtdq2ps	xmm2, xmm2;
-		cvtdq2ps	xmm3, xmm3;
-		mulps		xmm2, xmm0;
-		mulps		xmm3, xmm0;
 		movhlps		xmm4, xmm2;
 		movhlps		xmm5, xmm3;
-		cvtps2pd	xmm2, xmm2;
-		cvtps2pd	xmm4, xmm4;
-		cvtps2pd	xmm3, xmm3;
-		cvtps2pd	xmm5, xmm5;
-		movups		[edi_ptr], xmm2;
-		movups		[edi_ptr + 0x10], xmm4;
-		movups		[edi_ptr + 0x20], xmm3;
-		movups		[edi_ptr + 0x30], xmm5;
+		cvtdq2pd	xmm2, xmm2;
+		cvtdq2pd	xmm4, xmm4;
+		cvtdq2pd	xmm3, xmm3;
+		cvtdq2pd	xmm5, xmm5;
+		mulpd		xmm2, xmm0;
+		mulpd		xmm4, xmm0;
+		mulpd		xmm3, xmm0;
+		mulpd		xmm5, xmm0;
+		movupd		[edi_ptr], xmm2;
+		movupd		[edi_ptr + 0x10], xmm4;
+		movupd		[edi_ptr + 0x20], xmm3;
+		movupd		[edi_ptr + 0x30], xmm5;
 		add			esi_ptr, 8;
 		add			edi_ptr, 0x40;
 		sub			ecx_ptr, 8;
@@ -827,7 +827,6 @@ loop_8:
 loop_1_pre:
 		add			ecx_ptr, 8;
 		jz			loop_end;
-		cvtps2pd	xmm0, xmm0;
 loop_1:
 		movzx		eax_ptr, byte ptr [esi_ptr];
 		cvtsi2sd	xmm2, eax_ptr;
