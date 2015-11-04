@@ -9,6 +9,231 @@
 #include "dccsbase.h"
 #include <algorithm>
 #include <numeric>
+#include <vector>
+#include <memory>
+
+#pragma comment(lib, "OpenCL")
+
+#pragma warning(disable: 4996)
+
+// OpenCL resources
+cl_platform_id		clPlatformID = NULL;
+cl_device_id		clDeviceID = NULL;
+cl_context			clContext = NULL;
+cl_command_queue	clCmdQueue = NULL;
+cl_device_type		clDeviceType = CL_DEVICE_TYPE_GPU;
+cl_program			clPgmBase = NULL;
+
+#define KERNEL(...) #__VA_ARGS__
+
+char const* g_szKernel = KERNEL(
+
+__kernel void GaussianSmoothX(write_only image2d_t des, read_only image2d_t src, global float const* filter, int width, int height, sampler_t sampler)
+{
+	local float coef[9];
+	int2 outCoord = (int2)(get_global_id(0), get_global_id(1));
+	if(get_local_id(0) < 9 && get_local_id(1) == 0)
+		coef[get_local_id(0)] = filter[get_local_id(0)];
+	barrier(CLK_LOCAL_MEM_FENCE);
+	if(outCoord.x < width && outCoord.y < height)
+	{
+		float4 outColor = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+		int weight = 0;
+		for(int x=outCoord.x-4; x<=outCoord.x+4; ++x, ++weight)
+		{
+			outColor += read_imagef(src, sampler, (int2)(x, outCoord.y)) * coef[weight];
+		}
+		write_imagef(des, outCoord, outColor);
+	}
+}
+
+__kernel void GaussianSmoothY(write_only image2d_t des, read_only image2d_t src, global float const* filter, int width, int height, sampler_t sampler)
+{
+	local float coef[9];
+	int2 outCoord = (int2)(get_global_id(0), get_global_id(1));
+	if(get_local_id(0) < 9 && get_local_id(1) == 0)
+		coef[get_local_id(0)] = filter[get_local_id(0)];
+	barrier(CLK_LOCAL_MEM_FENCE);
+	if(outCoord.x < width && outCoord.y < height)
+	{
+		float4 outColor = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+		int weight = 0;
+		for(int y=outCoord.y-4; y<=outCoord.y+4; ++y, ++weight)
+		{
+			outColor += read_imagef(src, sampler, (int2)(outCoord.x, y)) * coef[weight];
+		}
+		write_imagef(des, outCoord, outColor);
+	}
+}
+
+__kernel void Gaussian2DReplicate(write_only image2d_t des, read_only image2d_t src, global float const* filter, int width, int height, sampler_t sampler)
+{
+	local float coef[81];
+	if(get_local_id(1) < 5)
+	{
+		int idx = get_local_id(1)*16 + get_local_id(0);
+		coef[idx] = filter[idx];
+	}
+	if(get_local_id(1) == 5 && get_local_id(0) == 0)
+		coef[80] = filter[80];
+	barrier(CLK_LOCAL_MEM_FENCE);
+	int2 outCoord = (int2)(get_global_id(0), get_global_id(1));
+	if(outCoord.x < width && outCoord.y < height)
+	{
+		int2 startCoord = (int2)(outCoord.x - 4, outCoord.y - 4);
+		int2 endCoord = (int2)(outCoord.x + 4, outCoord.y + 4);
+		float4 outColor = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+		int weight = 0;
+		for(int y=startCoord.y; y<=endCoord.y; ++y)
+		{
+			for(int x=startCoord.x; x<=endCoord.x; ++x)
+			{
+				outColor += read_imagef(src, sampler, (int2)(x, y)) * coef[weight];
+				weight++;
+			}
+		}
+		write_imagef(des, outCoord, outColor);
+	}
+}
+
+__kernel void GradMagnitude(write_only image2d_t des, read_only image2d_t gradX, read_only image2d_t gradY, int width, int height, sampler_t sampler)
+{
+	int2 outCoord = (int2)(get_global_id(0), get_global_id(1));
+	if(outCoord.x < width && outCoord.y < height)
+	{
+		float4 color = pown(read_imagef(gradX, sampler, outCoord), (int4)(2, 2, 2, 2)) + pown(read_imagef(gradY, sampler, outCoord), (int4)(2, 2, 2, 2));
+		write_imagef(des, outCoord, sqrt(color));
+	}
+}
+
+__kernel void GradNorm(write_only image2d_t des, read_only image2d_t src, int width, int height, sampler_t sampler, float maxGrad)
+{
+	int2 outCoord = (int2)(get_global_id(0), get_global_id(1));
+	if(outCoord.x < width && outCoord.y < height)
+	{
+		write_imagef(des, outCoord, read_imagef(src, sampler, outCoord) / maxGrad);
+	}
+}
+
+__kernel void GradHist(global int* hist, read_only image2d_t grad, global float const* buffer, int width, int height, sampler_t sampler)
+{
+	local float cbuffer[64];
+	if(get_local_id(1) < 4)
+	{
+		int idx = get_local_id(1)*16 + get_local_id(0);
+		cbuffer[idx] = buffer[idx];
+	}
+	barrier(CLK_LOCAL_MEM_FENCE);
+	int2 outCoord = (int2)(get_global_id(0), get_global_id(1));
+	if(outCoord.x == 0 && outCoord.y == 0)
+	{
+		for(int i=0; i<64; ++i)
+			hist[i] = 0;
+	}
+	barrier(CLK_GLOBAL_MEM_FENCE);
+	if(outCoord.x < width && outCoord.y < height)
+	{
+		float v = read_imagef(grad, sampler, outCoord).x;
+		for(int i=0; i<64; ++i)
+		{
+			if(v < cbuffer[i])
+			{
+				atomic_inc(&hist[i]);
+				break;
+			}
+		}
+	}
+}
+
+__kernel void NonMaxSuppress(write_only image2d_t des, read_only image2d_t GradX, read_only image2d_t GradY, read_only image2d_t Grad, int width, int height, sampler_t sampler)
+{
+	int2 outCoord = (int2)(get_global_id(0), get_global_id(1));
+	if(outCoord.x < width && outCoord.y < height)
+	{
+		float4 color = (float4)(0.0f, 0.0f, 0.0f, 0.0f);
+		if(outCoord.x > 0 && outCoord.x < width-1 && outCoord.y > 0 && outCoord.y < height-1)
+		{
+			float G = read_imagef(Grad, sampler, outCoord).x;
+			if(G != 0)
+			{
+				float GX = read_imagef(GradX, sampler, outCoord).x;
+				float GY = read_imagef(GradY, sampler, outCoord).x;
+				float G1 = 0.0f, G2 = 0.0f, G3 = 0.0f, G4 = 0.0f;
+				float w = 0.0f;
+				if(fabs(GY) > fabs(GX))
+				{
+					w = fabs(GX) / fabs(GY);
+					G2 = read_imagef(Grad, sampler, (int2)(outCoord.x, outCoord.y-1)).x;
+					G4 = read_imagef(Grad, sampler, (int2)(outCoord.x, outCoord.y+1)).x;
+					if(GX * GY > 0)
+					{
+						G1 = read_imagef(Grad, sampler, (int2)(outCoord.x-1, outCoord.y-1)).x;
+						G3 = read_imagef(Grad, sampler, (int2)(outCoord.x+1, outCoord.y+1)).x;
+					}
+					else
+					{
+						G1 = read_imagef(Grad, sampler, (int2)(outCoord.x+1, outCoord.y-1)).x;
+						G3 = read_imagef(Grad, sampler, (int2)(outCoord.x-1, outCoord.y+1)).x;
+					}
+				}
+				else
+				{
+					w = fabs(GY) / fabs(GX);
+					G2 = read_imagef(Grad, sampler, (int2)(outCoord.x+1, outCoord.y)).x;
+					G4 = read_imagef(Grad, sampler, (int2)(outCoord.x-1, outCoord.y)).x;
+					if(GX * GY > 0)
+					{
+						G1 = read_imagef(Grad, sampler, (int2)(outCoord.x+1, outCoord.y+1)).x;
+						G3 = read_imagef(Grad, sampler, (int2)(outCoord.x-1, outCoord.y-1)).x;
+					}
+					else
+					{
+						G1 = read_imagef(Grad, sampler, (int2)(outCoord.x+1, outCoord.y-1)).x;
+						G3 = read_imagef(Grad, sampler, (int2)(outCoord.x-1, outCoord.y+1)).x;
+					}
+				}
+				float Tmp1 = w * G1 + (1.0f - w) * G2;
+				float Tmp2 = w * G3 + (1.0f - w) * G4;
+				if(G >= Tmp1 && G >= Tmp2)
+					color = (float)(0.5f, 0.5f, 0.5f, 0.5f);
+			}
+		}
+		write_imagef(des, outCoord, color);
+	}
+}
+
+__kernel void Transpose(write_only image2d_t des, read_only image2d_t src, sampler_t sampler, int width, int height)
+{
+	int2 coord = (int2)(get_global_id(0), get_global_id(1));
+	if(coord.x < width && coord.y < height)
+	{
+		write_imageui(des, coord, read_imageui(src, sampler, (int2)(coord.y, coord.x)));
+	}
+}
+
+constant int nWeights3[3][3] = { {1, 8, 64}, {2, 16, 128}, {4, 32, 256} };
+__kernel void ApplyLut(write_only image2d_t des, read_only image2d_t src, global unsigned char* lut, sampler_t sampler, int width, int height)
+{
+	int2 coord = (int2)(get_global_id(0), get_global_id(1));
+	if(coord.x < width && coord.y < height)
+	{
+		int minR = coord.y == 0 ? 1 : 0;
+		int maxR = coord.y == height-1 ? 1 : 2;
+		int minC = coord.x == 0 ? 1 : 0;
+		int maxC = coord.x == width-1 ? 1 : 2;
+		int result = 0;
+		for(int rr=minR; rr<=maxR; ++rr)
+		{
+			for(int cc=minC; cc<=maxC; ++cc)
+			{
+				result += nWeights3[rr][cc] * (read_imageui(src, sampler, (int2)(coord.x+cc-1, coord.y+rr-1)).x != 0);
+			}
+		}
+		write_imageui(des, coord, (uint4)(lut[result] == 0 ? 0 : 255));
+	}
+}
+
+);
 
 #if defined(_M_X64) || defined(__x86_64__)
 
@@ -330,7 +555,6 @@ double dotproduct_d(double const* src1, double const* src2, int count)
     loop_1_pre:
         add         eax_ptr, 4;
         jz          loop_end;
-    loop_1:
         movsd       xmm1, [esi_ptr];
         mulsd       xmm1, [edi_ptr];
         addsd       xmm0, xmm1;
@@ -790,7 +1014,7 @@ loop_end:
 }
 
 decl_align(double, 16, dInv255[2]) = {1.0/255, 1.0/255};
-void ucharnorm2double_sse2(OUT double *des, IN unsigned char const*src, IN size_t count)
+void ucharnorm2double_sse2(OUT double* des, IN unsigned char const* src, IN size_t count)
 {
 	__asm {
 		mov			esi_ptr, src;
@@ -834,6 +1058,49 @@ loop_1:
 		movsd		[edi_ptr], xmm2;
 		add			esi_ptr, 1;
 		add			edi_ptr, 8;
+		dec			ecx_ptr;
+		jnz			loop_1;
+loop_end:
+	}
+}
+
+decl_align(float, 16, fInv255[4]) = {1.0f/255, 1.0f/255, 1.0f/255, 1.0f/255};
+void ucharnorm2float_sse2(OUT float* des, IN unsigned char const* src, IN size_t count)
+{
+	__asm {
+		mov			esi_ptr, src;
+		mov			ecx_ptr, count;
+		mov			edi_ptr, des;
+		movaps		xmm0, fInv255;
+		xorps		xmm1, xmm1;
+		sub			ecx_ptr, 8;
+		jl			loop_1_pre;
+loop_8:
+		movsd		xmm2, [esi_ptr];
+		punpcklbw	xmm2, xmm1;
+		movaps		xmm3, xmm2;
+		punpcklwd	xmm2, xmm1;
+		punpckhwd	xmm3, xmm1;
+		cvtdq2ps	xmm2, xmm2;
+		cvtdq2ps	xmm3, xmm3;
+		mulps		xmm2, xmm0;
+		mulps		xmm3, xmm0;
+		movups		[edi_ptr], xmm2;
+		movups		[edi_ptr + 0x10], xmm3;
+		add			esi_ptr, 8;
+		add			edi_ptr, 0x20;
+		sub			ecx_ptr, 8;
+		jge			loop_8;
+loop_1_pre:
+		add			ecx_ptr, 8;
+		jz			loop_end;
+loop_1:
+		movzx		eax_ptr, byte ptr [esi_ptr];
+		cvtsi2ss	xmm2, eax_ptr;
+		mulss		xmm2, xmm0;
+		movss		[edi_ptr], xmm2;
+		add			esi_ptr, 1;
+		add			edi_ptr, 4;
 		dec			ecx_ptr;
 		jnz			loop_1;
 loop_end:
@@ -1195,4 +1462,554 @@ loop_end:
 	}
 	if(max_mag > 0)
 		dbmemgain_sse2(magnitude, magnitude, 1.0/max_mag, count);
+}
+
+void float2double_sse2(double* des, float const* src, size_t count)
+{
+	__asm
+	{
+		mov			ecx_ptr, count;
+		mov			edi_ptr, des;
+		mov			esi_ptr, src;
+		sub			ecx_ptr, 8;
+		jl			loop_1_pre;
+loop_8:
+		movups		xmm0, [esi_ptr];
+		movups		xmm1, [esi_ptr + 0x10];
+		movhlps		xmm2, xmm0;
+		movhlps		xmm3, xmm1;
+		cvtps2pd	xmm0, xmm0;
+		cvtps2pd	xmm2, xmm2;
+		cvtps2pd	xmm1, xmm1;
+		cvtps2pd	xmm3, xmm3;
+		movupd		[edi_ptr], xmm0;
+		movupd		[edi_ptr + 0x10], xmm2;
+		movupd		[edi_ptr + 0x20], xmm1;
+		movupd		[edi_ptr + 0x30], xmm3;
+		add			esi_ptr, 0x20;
+		add			edi_ptr, 0x40;
+		sub			ecx_ptr, 8;
+		jge			loop_8;
+loop_1_pre:
+		add			ecx_ptr, 8;
+		jz			loop_end;
+loop_1:
+		cvtss2sd	xmm0, [esi_ptr];
+		movsd		[edi_ptr], xmm0;
+		add			esi_ptr, 4;
+		add			edi_ptr, 8;
+		dec			ecx_ptr;
+		jnz			loop_1;
+loop_end:
+	}
+}
+
+float maxfloat_sse2(float const* src, size_t count)
+{
+	float v = 0;
+	__asm
+	{
+		mov			ecx_ptr, count;
+		mov			esi_ptr, src;
+		xorps		xmm0, xmm0;
+		sub			ecx_ptr, 8;
+		jl			loop_1_pre;
+loop_8:
+		movups		xmm1, [esi_ptr];
+		movups		xmm2, [esi_ptr + 0x10];
+		maxps		xmm0, xmm1;
+		maxps		xmm0, xmm2;
+		add			esi_ptr, 0x20;
+		sub			ecx_ptr, 8;
+		jge			loop_8;
+		movhlps		xmm1, xmm0;
+		maxps		xmm0, xmm1;
+		pshufd		xmm1, xmm0, 1;
+		maxss		xmm0, xmm1;
+loop_1_pre:
+		add			ecx_ptr, 8;
+		jz			loop_end;
+loop_1:
+		maxss		xmm0, [esi_ptr];
+		add			esi_ptr, 4;
+		dec			ecx_ptr;
+		jnz			loop_1;
+loop_end:
+		movss		v, xmm0;
+	}
+	return v;
+}
+
+// 0-Intel CPU，1-Intel GPU，2-NVIDIA CUDA，3-AMD
+bool init_platform(int platformID)
+{
+	static char const* const platformName[] = {
+		"Intel",
+		"NVIDIA CUDA",
+		"Advanced Micro Devices"
+	};
+
+	cl_uint pidcount = 0;
+	clGetPlatformIDs(0, NULL, &pidcount);
+	if(pidcount == 0)
+		return false;
+
+	std::vector<cl_platform_id> pids(pidcount);
+	clGetPlatformIDs(pidcount, &pids[0], NULL);
+
+	char strInfo[100];
+	if(platformID > 1)
+		clDeviceType = CL_DEVICE_TYPE_GPU;
+	for(cl_uint i=0; i<pidcount; ++i)
+	{
+		clGetPlatformInfo(pids[i], CL_PLATFORM_NAME, 100, strInfo, NULL);
+		if(strstr(strInfo, platformName[platformID > 1 ? platformID-1 : 0]) != NULL)
+		{
+			if(clGetDeviceIDs(pids[i], clDeviceType, 1, &clDeviceID, NULL) != CL_SUCCESS)
+				continue;
+			cl_context_properties pops[] = { CL_CONTEXT_PLATFORM, (cl_context_properties)pids[i], NULL };
+			if((clContext = clCreateContextFromType(pops, clDeviceType, NULL, NULL, NULL)) == NULL)
+				continue;
+			cl_int errcode = CL_SUCCESS;
+			clCmdQueue = clCreateCommandQueue(clContext, clDeviceID, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, &errcode);
+			if(errcode == CL_INVALID_QUEUE_PROPERTIES)
+				clCmdQueue = clCreateCommandQueue(clContext, clDeviceID, 0, &errcode);
+			if(clCmdQueue == NULL)
+				continue;
+			clPlatformID = pids[i];
+			clPgmBase = clCreateProgramWithSource(clContext, 1, &g_szKernel, NULL, NULL);
+			errcode = clBuildProgram(clPgmBase, 1, &clDeviceID, "-cl-fast-relaxed-math", NULL, NULL);
+			break;
+		}
+	}
+	return true;
+}
+
+bool release_platform(int platformID)
+{
+	if(clCmdQueue != NULL)
+		clReleaseCommandQueue(clCmdQueue), clCmdQueue = NULL;
+	if(clContext != NULL)
+		clReleaseContext(clContext), clContext = NULL;
+	return true;
+}
+
+decl_align(float, 16, g_pfKernel1D[9]) = {5.33905354532819e-005f, 0.00176805171185202f, 
+	0.0215392793018486f, 0.0965323526300539f, 0.159154943091895f, 
+	0.0965323526300539f, 0.0215392793018486f, 0.00176805171185202f, 
+	5.33905354532819e-005f};
+
+decl_align(float, 16, g_pfKernel2D_X[81]) = { 
+	1.43284234626241e-007f,     3.55869164115247e-006f,     2.89024929508973e-005f,     6.47659933817797e-005f, 0 ,   -6.47659933817797e-005f ,   -2.89024929508973e-005f,    -3.55869164115247e-006f, -1.43284234626241e-007f,
+	4.7449221882033e-006f,      0.000117847682078385f,      0.000957119116801882f,       0.00214475514239131f,  0 ,     -0.00214475514239131f,     -0.000957119116801882f,     -0.000117847682078385f, -4.7449221882033e-006f,
+	5.78049859017946e-005f,       0.00143567867520282f,        0.0116600978601128f,        0.0261284665693698f, 0 ,      -0.0261284665693698f,       -0.0116600978601128f,      -0.00143567867520282f, -5.78049859017946e-005f,
+	0.000259063973527119f,       0.00643426542717393f,        0.0522569331387397f,         0.117099663048638f, 0 ,       -0.117099663048638f ,      -0.0522569331387397f,      -0.00643426542717393f,  -0.000259063973527119f,
+	0.000427124283626255f,       0.0106083102711121f,        0.0861571172073945f,         0.193064705260108f, 0  ,      -0.193064705260108f ,      -0.0861571172073945f,       -0.0106083102711121f, -0.000427124283626255f,
+	0.000259063973527119f,      0.00643426542717393f,        0.0522569331387397f,         0.117099663048638f, 0  ,      -0.117099663048638f,       -0.0522569331387397f,      -0.00643426542717393f, -0.000259063973527119f,
+	5.78049859017946e-005f,       0.00143567867520282f,        0.0116600978601128f,        0.0261284665693698f, 0 ,      -0.0261284665693698f ,      -0.0116600978601128f,      -0.00143567867520282f, -5.78049859017946e-005f,
+	4.7449221882033e-006f,      0.000117847682078385f,      0.000957119116801882f,       0.00214475514239131f, 0  ,    -0.00214475514239131f,     -0.000957119116801882f,     -0.000117847682078385f, -4.7449221882033e-006f,
+	1.43284234626241e-007f,     3.55869164115247e-006f,     2.89024929508973e-005f,     6.47659933817797e-005f, 0    -6.47659933817797e-005f,    -2.89024929508973e-005f,    -3.55869164115247e-006f, -1.43284234626241e-007f
+};
+
+decl_align(float, 16, g_pfKernel2D_Y[81]) = {
+	1.43284234626241e-007f,      4.7449221882033e-006f,     5.78049859017946e-005f,      0.000259063973527119f,0.000427124283626255f,      0.000259063973527119f,     5.78049859017946e-005f,      4.7449221882033e-006f,1.43284234626241e-007f,
+	3.55869164115247e-006f,      0.000117847682078385f,       0.00143567867520282f,       0.00643426542717393f,0.0106083102711121f,       0.00643426542717393f,       0.00143567867520282f ,     0.000117847682078385f,3.55869164115247e-006f,
+	2.89024929508973e-005f,      0.000957119116801882f,        0.0116600978601128f,        0.0522569331387397f,0.0861571172073945f,        0.0522569331387397f,        0.0116600978601128f,      0.000957119116801882f,2.89024929508973e-005f,
+	6.47659933817797e-005f,       0.00214475514239131f,        0.0261284665693698f,         0.117099663048638f,0.193064705260108f,         0.117099663048638f ,       0.0261284665693698f,       0.00214475514239131f,6.47659933817797e-005f,
+	0,                          0,                           0 ,                        0,                 0,                         0     ,                    0             ,            0,                    0,
+	-6.47659933817797e-005f,      -0.00214475514239131f,       -0.0261284665693698f,        -0.117099663048638f,-0.193064705260108f,        -0.117099663048638f,       -0.0261284665693698f,      -0.00214475514239131f,-6.47659933817797e-005f,
+	-2.89024929508973e-005f,     -0.000957119116801882f,       -0.0116600978601128f,       -0.0522569331387397f, -0.0861571172073945f,       -0.0522569331387397f,       -0.0116600978601128f,     -0.000957119116801882f,-2.89024929508973e-005f,
+	-3.55869164115247e-006f,     -0.000117847682078385f,      -0.00143567867520282f,      -0.00643426542717393f,-0.0106083102711121f,      -0.00643426542717393f,      -0.00143567867520282f,     -0.000117847682078385f,-3.55869164115247e-006f,
+	-1.43284234626241e-007f,     -4.7449221882033e-006f,    -5.78049859017946e-005f,     -0.000259063973527119f,-0.000427124283626255f,     -0.000259063973527119f,    -5.78049859017946e-005f ,    -4.7449221882033e-006f,-1.43284234626241e-007f
+};
+
+decl_align(float, 16, s_fFactorRegon64[64]) = {
+	0.00793650793651f,
+	0.02380952380953f,
+	0.03968253968255f,
+	0.05555555555557f,
+	0.07142857142859f,
+	0.08730158730161f,
+	0.10317460317463f,
+	0.11904761904765f,
+	0.13492063492067f,
+	0.15079365079369f,
+	0.16666666666671f,
+	0.18253968253973f,
+	0.19841269841275f,
+	0.21428571428577f,
+	0.23015873015879f,
+	0.24603174603181f,
+	0.26190476190483f,
+	0.27777777777785f,
+	0.29365079365087f,
+	0.30952380952389f,
+	0.32539682539691f,
+	0.34126984126993f,
+	0.35714285714295f,
+	0.37301587301597f,
+	0.38888888888899f,
+	0.40476190476201f,
+	0.42063492063503f,
+	0.43650793650805f,
+	0.45238095238107f,
+	0.46825396825409f,
+	0.48412698412711f,
+	0.50000000000013f,
+	0.51587301587315f,
+	0.53174603174617f,
+	0.54761904761919f,
+	0.56349206349221f,
+	0.57936507936523f,
+	0.59523809523825f,
+	0.61111111111127f,
+	0.62698412698429f,
+	0.64285714285731f,
+	0.65873015873033f,
+	0.67460317460335f,
+	0.69047619047637f,
+	0.70634920634939f,
+	0.72222222222241f,
+	0.73809523809543f,
+	0.75396825396845f,
+	0.76984126984147f,
+	0.78571428571449f,
+	0.80158730158751f,
+	0.81746031746053f,
+	0.83333333333355f,
+	0.84920634920657f,
+	0.86507936507959f,
+	0.88095238095261f,
+	0.89682539682563f,
+	0.91269841269865f,
+	0.92857142857167f,
+	0.94444444444469f,
+	0.96031746031771f,
+	0.97619047619073f,
+	0.99206349206375f,
+	1.00793650793677f
+};
+
+decl_align(unsigned char, 16, bLUTArray1[512]) = 
+{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,1,1,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0,1,1,0,0,1,1,0,0,1,1,		
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,0,0,1		
+,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,		
+1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1		
+,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,1,0,0,		
+1,1,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1		
+,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,		
+1,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1		
+,1,1,1,1,1,1,1,1,1,1,1,1};
+
+//基于索引表的细化表2
+decl_align(unsigned char, 16, bLUTArray2[512]) = 
+{  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,1,1,1,0,0,1,1,0,1,1,1,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,1,1,1,0,0,1,1,0,1,1,1,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,1,1,1,0,0,1,1,0,1,1,1,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,1,1,1,0,0,1,1,0,1,1,1};
+
+bool clGetCannyEdge(double* pGrad,
+					unsigned char* edge,
+					unsigned char const* image,
+					int width,
+					int height,
+					double ratioLow,
+					double ratioHigh,
+					double& thresholdLow,
+					double& thresholdHigh)
+{
+	int count = width * height;
+	cl_image_format imgFormat = { CL_LUMINANCE, CL_UNORM_INT8 };
+	cl_mem clSrc = clCreateImage2D(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, &imgFormat, width, height, width, (void*)image, NULL);
+	if(clSrc == NULL)
+		return false;
+
+	// Gaussian Smooth
+	imgFormat.image_channel_data_type = CL_FLOAT;
+	cl_mem clSmooth = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL);
+	if(clSmooth == NULL)
+	{
+		clReleaseMemObject(clSrc);
+		return false;
+	}
+
+	cl_int ret_code = CL_SUCCESS;
+	cl_kernel kernelGaussianSmooth = clCreateKernel(clPgmBase, "GaussianSmoothX", &ret_code);
+	if(kernelGaussianSmooth == NULL)
+	{
+		clReleaseMemObject(clSrc);
+		clReleaseMemObject(clSmooth);
+		return false;
+	}
+
+	cl_sampler sampler = clCreateSampler(clContext, CL_FALSE, CL_ADDRESS_CLAMP_TO_EDGE, CL_FILTER_NEAREST, NULL);
+	cl_mem smooth1D = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(g_pfKernel1D), g_pfKernel1D, NULL);
+	clSetKernelArg(kernelGaussianSmooth, 0, sizeof(cl_mem), &clSmooth);
+	clSetKernelArg(kernelGaussianSmooth, 1, sizeof(cl_mem), &clSrc);
+	clSetKernelArg(kernelGaussianSmooth, 2, sizeof(cl_mem), &smooth1D);
+	clSetKernelArg(kernelGaussianSmooth, 3, sizeof(int), &width);
+	clSetKernelArg(kernelGaussianSmooth, 4, sizeof(int), &height);
+	clSetKernelArg(kernelGaussianSmooth, 5, sizeof(cl_sampler), &sampler);
+	size_t local_work_size[] = {16, 16};
+	size_t global_work_size[] = {(width+15)&~15, (height+15)&~15};
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianSmooth, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+
+	cl_mem clSmoothY = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL);
+	cl_kernel kernelGaussianSmoothY = clCreateKernel(clPgmBase, "GaussianSmoothY", NULL);
+	clSetKernelArg(kernelGaussianSmoothY, 0, sizeof(cl_mem), &clSmoothY);
+	clSetKernelArg(kernelGaussianSmoothY, 1, sizeof(cl_mem), &clSmooth);
+	clSetKernelArg(kernelGaussianSmoothY, 2, sizeof(cl_mem), &smooth1D);
+	clSetKernelArg(kernelGaussianSmoothY, 3, sizeof(int), &width);
+	clSetKernelArg(kernelGaussianSmoothY, 4, sizeof(int), &height);
+	clSetKernelArg(kernelGaussianSmoothY, 5, sizeof(cl_sampler), &sampler);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianSmoothY, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelGaussianSmooth);
+	clReleaseKernel(kernelGaussianSmoothY);
+	clReleaseMemObject(smooth1D);
+
+	// Gaussian Filter
+	cl_mem smooth2D = clCreateBuffer(clContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(g_pfKernel2D_X), g_pfKernel2D_X, NULL);
+	cl_kernel kernelGaussianFilter = clCreateKernel(clPgmBase, "Gaussian2DReplicate", NULL);
+	clSetKernelArg(kernelGaussianFilter, 0, sizeof(cl_mem), &clSmooth);
+	clSetKernelArg(kernelGaussianFilter, 1, sizeof(cl_mem), &clSmoothY);
+	clSetKernelArg(kernelGaussianFilter, 2, sizeof(cl_mem), &smooth2D);
+	clSetKernelArg(kernelGaussianFilter, 3, sizeof(int), &width);
+	clSetKernelArg(kernelGaussianFilter, 4, sizeof(int), &height);
+	clSetKernelArg(kernelGaussianFilter, 5, sizeof(cl_sampler), &sampler);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianFilter, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	cl_mem clGradX = clSmooth;
+	clSmooth = NULL;
+
+	void* memptr = clEnqueueMapBuffer(clCmdQueue, smooth2D, CL_TRUE, CL_MAP_WRITE, 0, sizeof(g_pfKernel2D_Y), 0, NULL, NULL, NULL);
+	memcpy(memptr, g_pfKernel2D_Y, sizeof(g_pfKernel2D_Y));
+	clEnqueueUnmapMemObject(clCmdQueue, smooth2D, memptr, 0, NULL, NULL);
+	cl_mem clGradY = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL);
+	clSetKernelArg(kernelGaussianFilter, 0, sizeof(cl_mem), &clGradY);
+	clSetKernelArg(kernelGaussianFilter, 1, sizeof(cl_mem), &clSmoothY);
+	clSetKernelArg(kernelGaussianFilter, 2, sizeof(cl_mem), &smooth2D);
+	clSetKernelArg(kernelGaussianFilter, 3, sizeof(int), &width);
+	clSetKernelArg(kernelGaussianFilter, 4, sizeof(int), &height);
+	clSetKernelArg(kernelGaussianFilter, 5, sizeof(cl_sampler), &sampler);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianFilter, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelGaussianFilter);
+	clReleaseMemObject(smooth2D);
+
+	cl_mem clGrad = clSmoothY;
+	clSmoothY = NULL;
+	cl_kernel kernelGradMagnitude = clCreateKernel(clPgmBase, "GradMagnitude", NULL);
+	clSetKernelArg(kernelGradMagnitude, 0, sizeof(cl_mem), &clGrad);
+	clSetKernelArg(kernelGradMagnitude, 1, sizeof(cl_mem), &clGradX);
+	clSetKernelArg(kernelGradMagnitude, 2, sizeof(cl_mem), &clGradY);
+	clSetKernelArg(kernelGradMagnitude, 3, sizeof(int), &width);
+	clSetKernelArg(kernelGradMagnitude, 4, sizeof(int), &height);
+	clSetKernelArg(kernelGradMagnitude, 5, sizeof(cl_sampler), &sampler);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGradMagnitude, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelGradMagnitude);
+
+	size_t image_row_pitch = 0;
+	size_t origin[] = {0, 0, 0}, region[] = {width, height, 1};
+	memptr = clEnqueueMapImage(clCmdQueue, clGrad, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, NULL);
+	float maxGrad = 0;
+	if(image_row_pitch == (width << 2))
+		maxGrad = maxfloat_sse2((float*)memptr, count);
+	else
+	{
+		float* tmpptr = (float*)memptr;
+		for(int i=0; i<height; ++i)
+		{
+			float tmpv = maxfloat_sse2(tmpptr, width);
+			maxGrad = std::max(maxGrad, tmpv);
+			tmpptr = (float*)((char*)tmpptr + image_row_pitch);
+		}
+	}
+	clEnqueueUnmapMemObject(clCmdQueue, clGrad, memptr, 0, NULL, NULL);
+
+	cl_mem clGradNorm = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL);
+	cl_kernel kernelGradInv = clCreateKernel(clPgmBase, "GradNorm", NULL);
+	clSetKernelArg(kernelGradInv, 0, sizeof(cl_mem), &clGradNorm);
+	clSetKernelArg(kernelGradInv, 1, sizeof(cl_mem), &clGrad);
+	clSetKernelArg(kernelGradInv, 2, sizeof(int), &width);
+	clSetKernelArg(kernelGradInv, 3, sizeof(int), &height);
+	clSetKernelArg(kernelGradInv, 4, sizeof(cl_sampler), &sampler);
+	clSetKernelArg(kernelGradInv, 5, sizeof(float), &maxGrad);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGradInv, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelGradInv);
+
+	cl_mem buffer = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(s_fFactorRegon64), s_fFactorRegon64, NULL);
+	cl_mem hist = clCreateBuffer(clContext, CL_MEM_READ_WRITE, 64*sizeof(int), NULL, NULL);
+	cl_kernel kernelHist = clCreateKernel(clPgmBase, "GradHist", NULL);
+	clSetKernelArg(kernelHist, 0, sizeof(cl_mem), &hist);
+	clSetKernelArg(kernelHist, 1, sizeof(cl_mem), &clGradNorm);
+	clSetKernelArg(kernelHist, 2, sizeof(cl_mem), &buffer);
+	clSetKernelArg(kernelHist, 3, sizeof(int), &width);
+	clSetKernelArg(kernelHist, 4, sizeof(int), &height);
+	clSetKernelArg(kernelHist, 5, sizeof(cl_sampler), &sampler);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelHist, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelHist);
+	clReleaseMemObject(buffer);
+	
+	memptr = clEnqueueMapBuffer(clCmdQueue, hist, CL_TRUE, CL_MAP_READ, 0, 64*sizeof(int), 0, NULL, NULL, NULL);
+	int accuhist[64];
+	accuhist[0] = ((int*)memptr)[0];
+	for(int i=1; i<64; ++i)
+		accuhist[i] = accuhist[i-1] + ((int*)memptr)[i];
+	clEnqueueUnmapMemObject(clCmdQueue, hist, memptr, 0, NULL, NULL);
+	clReleaseMemObject(hist);
+
+	double TH = ratioHigh * count;
+	for(int i=0; i<64; ++i)
+	{
+		if (accuhist[i] > TH)
+		{
+			thresholdHigh = (i + 1) * (1.0/64);
+			break;
+		}
+	}
+	thresholdLow = ratioLow * thresholdHigh;
+	
+	// Non-maximum suppress
+	cl_kernel kernelNonMaxSuppress = clCreateKernel(clPgmBase, "NonMaxSuppress", NULL);
+	clSetKernelArg(kernelNonMaxSuppress, 0, sizeof(cl_mem), &clSrc);
+	clSetKernelArg(kernelNonMaxSuppress, 1, sizeof(cl_mem), &clGradX);
+	clSetKernelArg(kernelNonMaxSuppress, 2, sizeof(cl_mem), &clGradY);
+	clSetKernelArg(kernelNonMaxSuppress, 3, sizeof(cl_mem), &clGradNorm);
+	clSetKernelArg(kernelNonMaxSuppress, 4, sizeof(int), &width);
+	clSetKernelArg(kernelNonMaxSuppress, 5, sizeof(int), &height);
+	clSetKernelArg(kernelNonMaxSuppress, 6, sizeof(cl_sampler), &sampler);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelNonMaxSuppress, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelNonMaxSuppress);
+
+	memptr = clEnqueueMapImage(clCmdQueue, clSrc, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, NULL);
+	if(image_row_pitch == width)
+		memcpy(edge, memptr, count);
+	else
+	{
+		unsigned char* tmpptr = (unsigned char*)memptr;
+		for(int i=0; i<height; ++i, edge+=width)
+			memcpy(edge, tmpptr, width), tmpptr += image_row_pitch;
+	}
+	clEnqueueUnmapMemObject(clCmdQueue, clSrc, memptr, 0, NULL, NULL);
+
+	memptr = clEnqueueMapImage(clCmdQueue, clGradNorm, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, NULL);
+	if(image_row_pitch == (width << 2))
+		float2double_sse2(pGrad, (float*)memptr, count);
+	else
+	{
+		float* tmpptr = (float*)memptr;
+		for(int i=0; i<height; ++i, pGrad+=width)
+			float2double_sse2(pGrad, tmpptr, width), tmpptr += image_row_pitch;
+	}
+	clEnqueueUnmapMemObject(clCmdQueue, clGradNorm, memptr, 0, NULL, NULL);
+
+	clReleaseMemObject(clGradNorm);
+	clReleaseMemObject(clGrad);
+	clReleaseMemObject(clGradX);
+	clReleaseMemObject(clGradY);
+	clReleaseMemObject(clSrc);
+	clReleaseSampler(sampler);
+	return true;
+}
+
+bool clCannyThinner(unsigned char* des, unsigned char const* src, int width, int height, int iterNum)
+{
+	int count = width * height;
+	cl_image_format imgFormat = { CL_LUMINANCE, CL_UNORM_INT8 };
+	cl_mem clSrc = clCreateImage2D(clContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, &imgFormat, width, height, width, (void*)src, NULL);
+	cl_mem clTrans = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL);
+	cl_sampler sampler = clCreateSampler(clContext, CL_FALSE, CL_ADDRESS_NONE, CL_FILTER_NEAREST, NULL);
+	cl_kernel kernelTrans = clCreateKernel(clPgmBase, "Transpose", NULL);
+	clSetKernelArg(kernelTrans, 0, sizeof(cl_mem), &clTrans);
+	clSetKernelArg(kernelTrans, 1, sizeof(cl_mem), &clSrc);
+	clSetKernelArg(kernelTrans, 2, sizeof(cl_sampler), &sampler);
+	clSetKernelArg(kernelTrans, 3, sizeof(int), &height);
+	clSetKernelArg(kernelTrans, 4, sizeof(int), &width);
+	size_t local_work_size[] = {16, 16};
+	size_t global_work_size[] = {(width+15)&~15, (height+15)&~15};
+	cl_int errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelTrans, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+
+	cl_mem clBackup = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL);
+	cl_mem clTmp = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL);
+	cl_mem clLut1 = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(bLUTArray1), bLUTArray1, NULL);
+	cl_mem clLut2 = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(bLUTArray2), bLUTArray2, NULL);
+	bool done = false;
+	size_t origin[] = {0, 0, 0}, region[] = {height, width, 1};
+	cl_kernel kernelAppluLut = clCreateKernel(clPgmBase, "ApplyLut", NULL);
+	int iterates = 1;
+	bool equalC = true;
+	while(!done)
+	{
+		errcode = clEnqueueCopyImage(clCmdQueue, clTrans, clBackup, origin, origin, region, 0, NULL, NULL);
+		clSetKernelArg(kernelAppluLut, 0, sizeof(cl_mem), &clTmp);
+		clSetKernelArg(kernelAppluLut, 1, sizeof(cl_mem), &clTrans);
+		clSetKernelArg(kernelAppluLut, 2, sizeof(cl_mem), &clLut1);
+		clSetKernelArg(kernelAppluLut, 3, sizeof(cl_sampler), &sampler);
+		clSetKernelArg(kernelAppluLut, 4, sizeof(int), &height);
+		clSetKernelArg(kernelAppluLut, 5, sizeof(int), &width);
+		errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelAppluLut, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+
+		clSetKernelArg(kernelAppluLut, 0, sizeof(cl_mem), &clTrans);
+		clSetKernelArg(kernelAppluLut, 1, sizeof(cl_mem), &clTmp);
+		clSetKernelArg(kernelAppluLut, 2, sizeof(cl_mem), &clLut2);
+		clSetKernelArg(kernelAppluLut, 3, sizeof(cl_sampler), &sampler);
+		clSetKernelArg(kernelAppluLut, 4, sizeof(int), &height);
+		clSetKernelArg(kernelAppluLut, 5, sizeof(int), &width);
+		errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelAppluLut, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+
+		size_t row_pitch0 = 0;
+		void* ptr0 = clEnqueueMapImage(clCmdQueue, clBackup, CL_TRUE, CL_MAP_READ, origin, region, &row_pitch0, NULL, 0, NULL, NULL, NULL);
+		size_t row_pitch1 = 0;
+		void* ptr1 = clEnqueueMapImage(clCmdQueue, clTrans, CL_TRUE, CL_MAP_READ, origin, region, &row_pitch1, NULL, 0, NULL, NULL, NULL);
+		if(row_pitch0 == row_pitch1 && row_pitch0 == height)
+			equalC = memcmp(ptr0, ptr1, count) == 0;
+		else
+		{
+			void* tmp0 = ptr0;
+			void* tmp1 = ptr1;
+			for(int i=0; i<width; ++i)
+			{
+				if(!(equalC = memcmp(tmp0, tmp1, height) != 0))
+					break;
+				tmp0 = (char*)tmp0 + row_pitch0, tmp1 = (char*)tmp1 + row_pitch1;
+			}
+		}
+		clEnqueueUnmapMemObject(clCmdQueue, clBackup, ptr0, 0, NULL, NULL);
+		clEnqueueUnmapMemObject(clCmdQueue, clTrans, ptr1, 0, NULL, NULL);
+
+		done = (iterates >= iterNum) | equalC;
+		iterates++;
+	}
+
+	clSetKernelArg(kernelTrans, 0, sizeof(cl_mem), &clSrc);
+	clSetKernelArg(kernelTrans, 1, sizeof(cl_mem), &clTrans);
+	clSetKernelArg(kernelTrans, 2, sizeof(cl_sampler), &sampler);
+	clSetKernelArg(kernelTrans, 3, sizeof(int), &width);
+	clSetKernelArg(kernelTrans, 4, sizeof(int), &height);
+	errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelTrans, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+
+	size_t image_row_pitch = 0;
+	std::swap(region[0], region[1]);
+	void* memptr = clEnqueueMapImage(clCmdQueue, clSrc, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, NULL);
+	if(image_row_pitch == width)
+		memcpy(des, memptr, count);
+	else
+	{
+		unsigned char* tmpptr = (unsigned char*)memptr;
+		for(int i=0; i<height; ++i, tmpptr+=image_row_pitch, des+=width)
+			memcpy(des, tmpptr, width);
+	}
+	clEnqueueUnmapMemObject(clCmdQueue, clSrc, memptr, 0, NULL, NULL);
+	clReleaseKernel(kernelTrans);
+	clReleaseKernel(kernelAppluLut);
+	clReleaseMemObject(clSrc);
+	clReleaseMemObject(clTmp);
+	clReleaseMemObject(clTrans);
+	clReleaseMemObject(clLut1);
+	clReleaseMemObject(clLut2);
+	clReleaseMemObject(clBackup);
+	clReleaseSampler(sampler);
+	return true;
 }

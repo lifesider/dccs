@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <intrin.h>
+#include <CL/opencl.h>
 
 #ifndef IN
 #define IN
@@ -50,7 +51,7 @@ size_t calccnt8_eq_sse2(unsigned char* src, int val, size_t count);
 
 void calccnt8_ver_sse2(int* des, unsigned char* src, intptr_t stride, int height);
 
-void ucharnorm2double_sse2(OUT double *des, IN unsigned char const*src, IN size_t count);
+void ucharnorm2double_sse2(OUT double* des, IN unsigned char const* src, IN size_t count);
 
 void dmemconv(double* des, double const* src, double const* kernel, int kernel_size, int count);
 
@@ -74,6 +75,23 @@ void nsp_calc_norm_magnitude_d(OUT double* magnitude,	// 归一化梯度
 							   IN double const* diffX,	// X 方向导数
 							   IN double const* diffY,	// Y 方向导数
 							   IN int count);
+
+// 0-Intel CPU，1-Intel GPU，2-NVIDIA CUDA，3-AMD
+bool init_platform(int platformID);
+
+bool release_platform(int platformID);
+
+bool clGetCannyEdge(double* pGrad,
+					unsigned char* edge,
+					unsigned char const* image,
+					int width,
+					int height,
+					double ratioLow,
+					double ratioHigh,
+					double& thresholdLow,
+					double& thresholdHigh);
+
+bool clCannyThinner(unsigned char* des, unsigned char const* src, int width, int height, int iterNum);
 
 #if defined(__cplusplus)
 }
