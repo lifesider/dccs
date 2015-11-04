@@ -2,8 +2,8 @@
 //  dccsbase.h
 //  DccsBase
 //
-//  Created by èµ–å®ˆæ³¢ on 15/9/17.
-//  Copyright (c) 2015å¹´ Sobey. All rights reserved.
+//  Created by ÀµÊØ²¨ on 15/9/17.
+//  Copyright (c) 2015Äê Sobey. All rights reserved.
 //
 
 #ifndef __DccsBase__dccsbase__
@@ -59,27 +59,27 @@ void dmemmul(double* des, double const* src, double weight, int count);
 
 void dmemmad(double* des, double const* src, double weight, int count);
 
-void nsp_filter(OUT double* des,			// æ»¤æ³¢åè¾“å‡ºç¼“å†²
-				IN double const* src,		// è¾“å…¥ç¼“å†²
-				IN double const* kernel,	// ä¸€ç»´æ ¸ç³»æ•°ç¼“å†²
-				IN int kernel_size,			// ä¸€ç»´æ ¸é•¿åº¦
-				IN int direction,			// 0-æ°´å¹³ï¼Œ1-å‚ç›´ï¼Œ2-æ°´å¹³å‚ç›´
-				IN int width,				// å®½åº¦
-				IN int height);				// é«˜åº¦
+void nsp_filter(OUT double* des,			// ÂË²¨ºóÊä³ö»º³å
+				IN double const* src,		// ÊäÈë»º³å
+				IN double const* kernel,	// Ò»Î¬ºËÏµÊı»º³å
+				IN int kernel_size,			// Ò»Î¬ºË³¤¶È
+				IN int direction,			// 0-Ë®Æ½£¬1-´¹Ö±£¬2-Ë®Æ½´¹Ö±
+				IN int width,				// ¿í¶È
+				IN int height);				// ¸ß¶È
 
 unsigned __int64* qmemset_sse2(OUT unsigned __int64* des, IN unsigned __int64 qword_value, IN size_t qword_count);
 
 void dbmemgain_sse2(OUT double *des, IN double *src, IN double dGain, IN size_t count);
 
-void nsp_calc_norm_magnitude_d(OUT double* magnitude,	// å½’ä¸€åŒ–æ¢¯åº¦
-							   IN double const* diffX,	// X æ–¹å‘å¯¼æ•°
-							   IN double const* diffY,	// Y æ–¹å‘å¯¼æ•°
+void nsp_calc_norm_magnitude_d(OUT double* magnitude,	// ¹éÒ»»¯Ìİ¶È
+							   IN double const* diffX,	// X ·½Ïòµ¼Êı
+							   IN double const* diffY,	// Y ·½Ïòµ¼Êı
 							   IN int count);
 
-// 0-Intel CPUï¼Œ1-Intel GPUï¼Œ2-NVIDIA CUDAï¼Œ3-AMD
+// 0-Intel GPU£¬1-NVIDIA CUDA£¬2-AMD
 bool init_platform(int platformID);
 
-bool release_platform(int platformID);
+bool release_platform();
 
 bool clGetCannyEdge(double* pGrad,
 					unsigned char* edge,
