@@ -2,7 +2,6 @@
 #include "XhDccsBase.h"
 #include <assert.h>
 
-#define SSE_OPTIMIZE
 #ifdef SSE_OPTIMIZE
 #include <intrin.h>
 #include "dccsbase.h"

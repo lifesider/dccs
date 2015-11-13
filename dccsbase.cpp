@@ -967,8 +967,8 @@ loop_255_2:
 		movdqu		xmm5, [esi_ptr + edx_ptr];
 		pcmpeqb		xmm4, xmm7;
 		pcmpeqb		xmm5, xmm7;
-		pand		xmm4, bit0Mask;
-		pand		xmm5, bit0Mask;
+		pandn		xmm4, bit0Mask;
+		pandn		xmm5, bit0Mask;
 		paddb		xmm6, xmm4;
 		paddb		xmm6, xmm5;
 		add			esi_ptr, ecx_ptr;
@@ -976,7 +976,7 @@ loop_255_2:
 		jnz			loop_255_2;
 		movdqu		xmm4, [esi_ptr];
 		pcmpeqb		xmm4, xmm7;
-		pand		xmm4, bit0Mask;
+		pandn		xmm4, bit0Mask;
 		paddb		xmm6, xmm4;
 		movdqa		xmm4, xmm6;
 		punpcklbw	xmm4, xmm7;
@@ -993,7 +993,7 @@ loop_1_pre:
 loop_1:
 		movdqu		xmm4, [esi_ptr];
 		pcmpeqb		xmm4, xmm7;
-		pand		xmm4, bit0Mask;
+		pandn		xmm4, bit0Mask;
 		paddb		xmm6, xmm4;
 		add			esi_ptr, edx_ptr;
 		dec			eax_ptr;
