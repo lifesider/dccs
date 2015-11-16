@@ -12,7 +12,6 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <intrin.h>
-#include <CL/opencl.h>
 
 #ifndef IN
 #define IN
@@ -81,17 +80,12 @@ bool init_platform(int platformID);
 
 bool release_platform();
 
-bool clGetCannyEdge(double* pGrad,
-					unsigned char* edge,
+bool clGetCannyEdge(unsigned char* edge,
 					unsigned char const* image,
 					int width,
 					int height,
 					double ratioLow,
-					double ratioHigh,
-					double& thresholdLow,
-					double& thresholdHigh);
-
-bool clCannyThinner(unsigned char* des, unsigned char const* src, int width, int height, int iterNum);
+					double ratioHigh);
 
 #if defined(__cplusplus)
 }

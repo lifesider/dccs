@@ -11,6 +11,9 @@
 #include <numeric>
 #include <vector>
 #include <memory>
+#include <xutility>
+#include <assert.h>
+#include <CL/opencl.h>
 
 #pragma comment(lib, "OpenCL")
 
@@ -23,6 +26,12 @@ cl_context			clContext = NULL;
 cl_command_queue	clCmdQueue = NULL;
 cl_device_type		clDeviceType = CL_DEVICE_TYPE_GPU;
 cl_program			clPgmBase = NULL;
+cl_mem				clSmooth1D = NULL;
+cl_mem				clSmooth2DX = NULL;
+cl_mem				clSmooth2DY = NULL;
+cl_mem				clFactorRegion = NULL;
+cl_mem				clLutArray1 = NULL;
+cl_mem				clLutArray2 = NULL;
 
 #define KERNEL(...) #__VA_ARGS__
 
@@ -130,7 +139,6 @@ __kernel void GradHist(global int* hist, read_only image2d_t grad, global float 
 		for(int i=0; i<64; ++i)
 			hist[i] = 0;
 	}
-	barrier(CLK_GLOBAL_MEM_FENCE);
 	if(outCoord.x < width && outCoord.y < height)
 	{
 		float v = read_imagef(grad, sampler, outCoord).x;
@@ -195,10 +203,26 @@ __kernel void NonMaxSuppress(write_only image2d_t des, read_only image2d_t GradX
 				float Tmp1 = w * G1 + (1.0f - w) * G2;
 				float Tmp2 = w * G3 + (1.0f - w) * G4;
 				if(G >= Tmp1 && G >= Tmp2)
-					color = (float)(0.5f, 0.5f, 0.5f, 0.5f);
+					color = (float4)(0.5f, 0.5f, 0.5f, 0.5f);
 			}
 		}
 		write_imagef(des, outCoord, color);
+	}
+}
+
+__kernel void Hysteresis(write_only image2d_t des, read_only image2d_t src, read_only image2d_t grad, sampler_t sampler, int width, int height, float low, float high)
+{
+	int2 coord = (int2)(get_global_id(0), get_global_id(1));
+	if(coord.x < width && coord.y < height)
+	{
+		float c = read_imagef(src, sampler, coord).x;
+		float g = read_imagef(grad, sampler, coord).x;
+		if(fabs(c-0.5f)<0.01f && g >= high)
+			write_imagef(des, coord, (float4)(1.0f));
+		else if(fabs(c-0.5f)<0.01f && g >= low)
+			write_imagef(des, coord, (float4)(0.5f));
+		else
+			write_imagef(des, coord, (float4)(0.0f));
 	}
 }
 
@@ -207,7 +231,7 @@ __kernel void Transpose(write_only image2d_t des, read_only image2d_t src, sampl
 	int2 coord = (int2)(get_global_id(0), get_global_id(1));
 	if(coord.x < width && coord.y < height)
 	{
-		write_imageui(des, coord, read_imageui(src, sampler, (int2)(coord.y, coord.x)));
+		write_imagef(des, coord, read_imagef(src, sampler, (int2)(coord.y, coord.x)));
 	}
 }
 
@@ -217,6 +241,7 @@ __kernel void ApplyLut(write_only image2d_t des, read_only image2d_t src, global
 	local int buffer[512];
 	int tid = get_local_id(1) * get_local_size(0) + get_local_id(0);
 	buffer[tid] = lut[tid];
+	buffer[tid+256] = lut[tid+256];
 	barrier(CLK_LOCAL_MEM_FENCE);
 	int2 coord = (int2)(get_global_id(0), get_global_id(1));
 	if(coord.x < width && coord.y < height)
@@ -1508,7 +1533,7 @@ loop_end:
 	}
 }
 
-float maxfloat_sse2(float const* src, size_t count)
+inline float maxfloat_sse2(float const* src, size_t count)
 {
 	float v = 0;
 	__asm
@@ -1544,60 +1569,41 @@ loop_end:
 	return v;
 }
 
-// 0-Intel GPU，1-NVIDIA CUDA，2-AMD
-bool init_platform(int platformID)
+inline void memcmpset(unsigned char* des, unsigned char* src, int count)
 {
-	static char const* const platformName[] = {
-		"Intel",
-		"NVIDIA CUDA",
-		"Advanced Micro Devices"
-	};
-
-	cl_uint pidcount = 0;
-	clGetPlatformIDs(0, NULL, &pidcount);
-	if(pidcount == 0)
-		return false;
-
-	std::vector<cl_platform_id> pids(pidcount);
-	clGetPlatformIDs(pidcount, &pids[0], NULL);
-
-	char strInfo[100];
-	if(platformID > 1)
-		clDeviceType = CL_DEVICE_TYPE_GPU;
-	for(cl_uint i=0; i<pidcount; ++i)
+	__asm
 	{
-		clGetPlatformInfo(pids[i], CL_PLATFORM_NAME, 100, strInfo, NULL);
-		if(strstr(strInfo, platformName[platformID]) != NULL)
-		{
-			if(clGetDeviceIDs(pids[i], clDeviceType, 1, &clDeviceID, NULL) != CL_SUCCESS)
-				continue;
-			cl_context_properties pops[] = { CL_CONTEXT_PLATFORM, (cl_context_properties)pids[i], NULL };
-			if((clContext = clCreateContextFromType(pops, clDeviceType, NULL, NULL, NULL)) == NULL)
-				continue;
-			cl_int errcode = CL_SUCCESS;
-			clCmdQueue = clCreateCommandQueue(clContext, clDeviceID, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, &errcode);
-			if(errcode == CL_INVALID_QUEUE_PROPERTIES)
-				clCmdQueue = clCreateCommandQueue(clContext, clDeviceID, 0, &errcode);
-			if(clCmdQueue == NULL)
-				continue;
-			clPlatformID = pids[i];
-			clPgmBase = clCreateProgramWithSource(clContext, 1, &g_szKernel, NULL, NULL);
-			errcode = clBuildProgram(clPgmBase, 1, &clDeviceID, "-cl-fast-relaxed-math", NULL, NULL);
-			break;
-		}
+		movsxd		eax_ptr, count;
+		mov			edi_ptr, des;
+		mov			esi_ptr, src;
+		pcmpeqb		xmm0, xmm0;
+		sub			eax_ptr, 32;
+		jl			loop_1_pre;
+loop_32:
+		movups		xmm1, [esi_ptr];
+		movups		xmm2, [esi_ptr + 16];
+		pcmpeqb		xmm1, xmm0;
+		pcmpeqb		xmm2, xmm0;
+		movntps		[edi_ptr], xmm1;
+		movntps		[edi_ptr + 16], xmm2;
+		add			esi_ptr, 32;
+		add			edi_ptr, 32;
+		sub			eax_ptr, 32;
+		jge			loop_32;
+		sfence;
+loop_1_pre:
+		add			eax_ptr, 32;
+		jz			loop_end;
+loop_1:
+		movzx		ecx_ptr, byte ptr [esi_ptr];
+		sar			cl, 8;
+		mov			[edi_ptr], cl;
+		inc			esi_ptr;
+		inc			edi_ptr;
+		dec			eax_ptr;
+		jnz			loop_1;
+loop_end:
 	}
-	return true;
-}
-
-bool release_platform()
-{
-	if(clCmdQueue != NULL)
-		clReleaseCommandQueue(clCmdQueue), clCmdQueue = NULL;
-	if(clContext != NULL)
-		clReleaseContext(clContext), clContext = NULL;
-	if(clPgmBase != NULL)
-		clReleaseProgram(clPgmBase), clPgmBase = NULL;
-	return true;
 }
 
 decl_align(float, 16, g_pfKernel1D[9]) = {5.33905354532819e-005f, 0.00176805171185202f, 
@@ -1705,32 +1711,104 @@ decl_align(unsigned char, 16, bLUTArray1[512]) =
 1,1,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1		
 ,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,		
 1,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1		
-,1,1,1,1,1,1,1,1,1,1,1,1};
+,1,1,1,1,1,1,1,1,1,1,1,1 };
 
 //基于索引表的细化表2
 decl_align(unsigned char, 16, bLUTArray2[512]) = 
-{  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,1,1,1,0,0,1,1,0,1,1,1,0,0,
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,1,1,1,0,0,1,1,0,1,1,1,0,0,0,
 0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,1,1,1,0,0,1,1,0,1,1,1,0,0,0,0,0,0,
-0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,1,1,1,0,0,1,1,0,1,1,1};
+0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,0,0,1,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,1,1,1,0,0,1,1,0,1,1,1 };
 
-bool clGetCannyEdge(double* pGrad,
-					unsigned char* edge,
+// 0-Intel GPU，1-NVIDIA CUDA，2-AMD
+bool init_platform(int platformID)
+{
+	static char const* const platformName[] = {
+		"Intel",
+		"NVIDIA CUDA",
+		"Advanced Micro Devices"
+	};
+
+	cl_uint pidcount = 0;
+	clGetPlatformIDs(0, NULL, &pidcount);
+	if(pidcount == 0)
+		return false;
+
+	std::vector<cl_platform_id> pids(pidcount);
+	clGetPlatformIDs(pidcount, &pids[0], NULL);
+
+	char strInfo[100];
+	if(platformID > 1)
+		clDeviceType = CL_DEVICE_TYPE_GPU;
+	for(cl_uint i=0; i<pidcount; ++i)
+	{
+		clGetPlatformInfo(pids[i], CL_PLATFORM_NAME, 100, strInfo, NULL);
+		if(strstr(strInfo, platformName[platformID]) != NULL)
+		{
+			if(clGetDeviceIDs(pids[i], clDeviceType, 1, &clDeviceID, NULL) != CL_SUCCESS)
+				continue;
+			cl_context_properties pops[] = { CL_CONTEXT_PLATFORM, (cl_context_properties)pids[i], NULL };
+			if((clContext = clCreateContextFromType(pops, clDeviceType, NULL, NULL, NULL)) == NULL)
+				continue;
+			cl_int errcode = CL_SUCCESS;
+			clCmdQueue = clCreateCommandQueue(clContext, clDeviceID, CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, &errcode);
+			if(errcode == CL_INVALID_QUEUE_PROPERTIES)
+				clCmdQueue = clCreateCommandQueue(clContext, clDeviceID, 0, &errcode);
+			if(clCmdQueue == NULL)
+				continue;
+			clPlatformID = pids[i];
+			clPgmBase = clCreateProgramWithSource(clContext, 1, &g_szKernel, NULL, NULL);
+			errcode = clBuildProgram(clPgmBase, 1, &clDeviceID, "-cl-fast-relaxed-math", NULL, NULL);
+			clSmooth1D = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(g_pfKernel1D), g_pfKernel1D, NULL);
+			clSmooth2DX = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(g_pfKernel2D_X), g_pfKernel2D_X, NULL);
+			clSmooth2DY = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(g_pfKernel2D_Y), g_pfKernel2D_Y, NULL);
+			clFactorRegion = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(s_fFactorRegon64), s_fFactorRegon64, NULL);
+			clLutArray1 = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(bLUTArray1), bLUTArray1, NULL);
+			clLutArray2 = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(bLUTArray2), bLUTArray2, NULL);
+			assert(clSmooth1D && clSmooth2DX && clSmooth2DY && clFactorRegion && clLutArray1 && clLutArray2);
+			break;
+		}
+	}
+	return clPlatformID != NULL;
+}
+
+bool release_platform()
+{
+	if(clCmdQueue != NULL)
+		clReleaseCommandQueue(clCmdQueue), clCmdQueue = NULL;
+	if(clContext != NULL)
+		clReleaseContext(clContext), clContext = NULL;
+	if(clPgmBase != NULL)
+		clReleaseProgram(clPgmBase), clPgmBase = NULL;
+	if(clSmooth1D != NULL)
+		clReleaseMemObject(clSmooth1D), clSmooth1D = NULL;
+	if(clSmooth2DX != NULL)
+		clReleaseMemObject(clSmooth2DX), clSmooth2DX = NULL;
+	if(clSmooth2DY != NULL)
+		clReleaseMemObject(clSmooth2DY), clSmooth2DY = NULL;
+	if(clFactorRegion != NULL)
+		clReleaseMemObject(clFactorRegion), clFactorRegion = NULL;
+	if(clLutArray1 != NULL)
+		clReleaseMemObject(clLutArray1), clLutArray1 = NULL;
+	if(clLutArray2 != NULL)
+		clReleaseMemObject(clLutArray2), clLutArray2 = NULL;
+	return true;
+}
+
+bool clGetCannyEdge(unsigned char* edge,
 					unsigned char const* image,
 					int width,
 					int height,
 					double ratioLow,
-					double ratioHigh,
-					double& thresholdLow,
-					double& thresholdHigh)
+					double ratioHigh)
 {
 	int count = width * height;
 	cl_image_format imgFormat = { CL_LUMINANCE, CL_UNORM_INT8 };
-	cl_mem clSrc = clCreateImage2D(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, &imgFormat, width, height, width, (void*)image, NULL);
+	cl_mem clSrc = clCreateImage2D(clContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, &imgFormat, width, height, width, (void*)image, NULL);
 	if(clSrc == NULL)
 		return false;
 
@@ -1753,10 +1831,9 @@ bool clGetCannyEdge(double* pGrad,
 	}
 
 	cl_sampler sampler = clCreateSampler(clContext, CL_FALSE, CL_ADDRESS_CLAMP_TO_EDGE, CL_FILTER_NEAREST, NULL);
-	cl_mem smooth1D = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(g_pfKernel1D), g_pfKernel1D, NULL);
 	clSetKernelArg(kernelGaussianSmooth, 0, sizeof(cl_mem), &clSmooth);
 	clSetKernelArg(kernelGaussianSmooth, 1, sizeof(cl_mem), &clSrc);
-	clSetKernelArg(kernelGaussianSmooth, 2, sizeof(cl_mem), &smooth1D);
+	clSetKernelArg(kernelGaussianSmooth, 2, sizeof(cl_mem), &clSmooth1D);
 	clSetKernelArg(kernelGaussianSmooth, 3, sizeof(int), &width);
 	clSetKernelArg(kernelGaussianSmooth, 4, sizeof(int), &height);
 	clSetKernelArg(kernelGaussianSmooth, 5, sizeof(cl_sampler), &sampler);
@@ -1769,7 +1846,7 @@ bool clGetCannyEdge(double* pGrad,
 	cl_kernel kernelGaussianSmoothY = clCreateKernel(clPgmBase, "GaussianSmoothY", NULL);
 	clSetKernelArg(kernelGaussianSmoothY, 0, sizeof(cl_mem), &clSmoothY);
 	clSetKernelArg(kernelGaussianSmoothY, 1, sizeof(cl_mem), &clSmooth);
-	clSetKernelArg(kernelGaussianSmoothY, 2, sizeof(cl_mem), &smooth1D);
+	clSetKernelArg(kernelGaussianSmoothY, 2, sizeof(cl_mem), &clSmooth1D);
 	clSetKernelArg(kernelGaussianSmoothY, 3, sizeof(int), &width);
 	clSetKernelArg(kernelGaussianSmoothY, 4, sizeof(int), &height);
 	clSetKernelArg(kernelGaussianSmoothY, 5, sizeof(cl_sampler), &sampler);
@@ -1777,11 +1854,10 @@ bool clGetCannyEdge(double* pGrad,
 	clReleaseEvent(clEvt[0]);
 
 	// Gaussian Filter
-	cl_mem smooth2D = clCreateBuffer(clContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, sizeof(g_pfKernel2D_X), g_pfKernel2D_X, NULL);
 	cl_kernel kernelGaussianFilter = clCreateKernel(clPgmBase, "Gaussian2DReplicate", NULL);
 	clSetKernelArg(kernelGaussianFilter, 0, sizeof(cl_mem), &clSmooth);
 	clSetKernelArg(kernelGaussianFilter, 1, sizeof(cl_mem), &clSmoothY);
-	clSetKernelArg(kernelGaussianFilter, 2, sizeof(cl_mem), &smooth2D);
+	clSetKernelArg(kernelGaussianFilter, 2, sizeof(cl_mem), &clSmooth2DX);
 	clSetKernelArg(kernelGaussianFilter, 3, sizeof(int), &width);
 	clSetKernelArg(kernelGaussianFilter, 4, sizeof(int), &height);
 	clSetKernelArg(kernelGaussianFilter, 5, sizeof(cl_sampler), &sampler);
@@ -1792,19 +1868,16 @@ bool clGetCannyEdge(double* pGrad,
 
 	clReleaseKernel(kernelGaussianSmooth);
 	clReleaseKernel(kernelGaussianSmoothY);
-	clReleaseMemObject(smooth1D);
 
-	void* memptr = clEnqueueMapBuffer(clCmdQueue, smooth2D, CL_TRUE, CL_MAP_WRITE, 0, sizeof(g_pfKernel2D_Y), 0, NULL, NULL, NULL);
-	memcpy(memptr, g_pfKernel2D_Y, sizeof(g_pfKernel2D_Y));
-	clEnqueueUnmapMemObject(clCmdQueue, smooth2D, memptr, 0, NULL, NULL);
 	cl_mem clGradY = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL);
 	clSetKernelArg(kernelGaussianFilter, 0, sizeof(cl_mem), &clGradY);
 	clSetKernelArg(kernelGaussianFilter, 1, sizeof(cl_mem), &clSmoothY);
-	clSetKernelArg(kernelGaussianFilter, 2, sizeof(cl_mem), &smooth2D);
+	clSetKernelArg(kernelGaussianFilter, 2, sizeof(cl_mem), &clSmooth2DY);
 	clSetKernelArg(kernelGaussianFilter, 3, sizeof(int), &width);
 	clSetKernelArg(kernelGaussianFilter, 4, sizeof(int), &height);
 	clSetKernelArg(kernelGaussianFilter, 5, sizeof(cl_sampler), &sampler);
-	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianFilter, 2, NULL, global_work_size, local_work_size, 0, NULL, &clEvt[1]);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianFilter, 2, NULL, global_work_size, local_work_size, 1, clEvt, &clEvt[1]);
+	clReleaseEvent(clEvt[0]);
 
 	cl_mem clGrad = clSmoothY;
 	clSmoothY = NULL;
@@ -1816,16 +1889,13 @@ bool clGetCannyEdge(double* pGrad,
 	clSetKernelArg(kernelGradMagnitude, 4, sizeof(int), &height);
 	clSetKernelArg(kernelGradMagnitude, 5, sizeof(cl_sampler), &sampler);
 	cl_event clEvtSwap;
-	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGradMagnitude, 2, NULL, global_work_size, local_work_size, 2, clEvt, &clEvtSwap);
-
-	clReleaseEvent(clEvt[0]);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGradMagnitude, 2, NULL, global_work_size, local_work_size, 1, &clEvt[1], &clEvtSwap);
 	clReleaseEvent(clEvt[1]);
 	clReleaseKernel(kernelGaussianFilter);
-	clReleaseMemObject(smooth2D);
 
 	size_t image_row_pitch = 0;
-	size_t origin[] = {0, 0, 0}, region[] = {width, height, 1};
-	memptr = clEnqueueMapImage(clCmdQueue, clGrad, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 1, &clEvtSwap, NULL, NULL);
+	size_t origin[] = { 0, 0, 0 }, region[] = { width, height, 1 };
+	void* memptr = clEnqueueMapImage(clCmdQueue, clGrad, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 1, &clEvtSwap, NULL, NULL);
 	clReleaseEvent(clEvtSwap);
 	clReleaseKernel(kernelGradMagnitude);
 	float maxGrad = 0;
@@ -1851,22 +1921,19 @@ bool clGetCannyEdge(double* pGrad,
 	clSetKernelArg(kernelGradInv, 3, sizeof(int), &height);
 	clSetKernelArg(kernelGradInv, 4, sizeof(cl_sampler), &sampler);
 	clSetKernelArg(kernelGradInv, 5, sizeof(float), &maxGrad);
-	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGradInv, 2, NULL, global_work_size, local_work_size, 0, NULL, &clEvtSwap);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGradInv, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelGradInv);
 
-	cl_mem buffer = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(s_fFactorRegon64), s_fFactorRegon64, NULL);
 	cl_mem hist = clCreateBuffer(clContext, CL_MEM_READ_WRITE, 64*sizeof(int), NULL, NULL);
 	cl_kernel kernelHist = clCreateKernel(clPgmBase, "GradHist", NULL);
 	clSetKernelArg(kernelHist, 0, sizeof(cl_mem), &hist);
 	clSetKernelArg(kernelHist, 1, sizeof(cl_mem), &clGradNorm);
-	clSetKernelArg(kernelHist, 2, sizeof(cl_mem), &buffer);
+	clSetKernelArg(kernelHist, 2, sizeof(cl_mem), &clFactorRegion);
 	clSetKernelArg(kernelHist, 3, sizeof(int), &width);
 	clSetKernelArg(kernelHist, 4, sizeof(int), &height);
 	clSetKernelArg(kernelHist, 5, sizeof(cl_sampler), &sampler);
-	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelHist, 2, NULL, global_work_size, local_work_size, 1, &clEvtSwap, NULL);
-	clReleaseKernel(kernelGradInv);
-	clReleaseEvent(clEvtSwap);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelHist, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelHist);
-	clReleaseMemObject(buffer);
 	
 	memptr = clEnqueueMapBuffer(clCmdQueue, hist, CL_TRUE, CL_MAP_READ, 0, 64*sizeof(int), 0, NULL, NULL, NULL);
 	int accuhist[64];
@@ -1874,18 +1941,19 @@ bool clGetCannyEdge(double* pGrad,
 	for(int i=1; i<64; ++i)
 		accuhist[i] = accuhist[i-1] + ((int*)memptr)[i];
 	clEnqueueUnmapMemObject(clCmdQueue, hist, memptr, 0, NULL, NULL);
-	clReleaseMemObject(hist);
 
 	double TH = ratioHigh * count;
+	float high_threshold = 0.0f;
+	float low_threshold = 0.0f;
 	for(int i=0; i<64; ++i)
 	{
 		if (accuhist[i] > TH)
 		{
-			thresholdHigh = (i + 1) * (1.0/64);
+			high_threshold = (float)((i + 1) * (1.0/64));
 			break;
 		}
 	}
-	thresholdLow = ratioLow * thresholdHigh;
+	low_threshold = (float)(ratioLow * high_threshold);
 	
 	// Non-maximum suppress
 	cl_kernel kernelNonMaxSuppress = clCreateKernel(clPgmBase, "NonMaxSuppress", NULL);
@@ -1899,81 +1967,129 @@ bool clGetCannyEdge(double* pGrad,
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelNonMaxSuppress, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelNonMaxSuppress);
 
-	memptr = clEnqueueMapImage(clCmdQueue, clSrc, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, NULL);
-	if(image_row_pitch == width)
+	// Hysteresis
+	cl_kernel kernelHys = clCreateKernel(clPgmBase, "Hysteresis", NULL);
+	imgFormat.image_channel_data_type = CL_UNORM_INT8;
+	cl_mem clEdge = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL);
+	clSetKernelArg(kernelHys, 0, sizeof(cl_mem), &clEdge);
+	clSetKernelArg(kernelHys, 1, sizeof(cl_mem), &clSrc);
+	clSetKernelArg(kernelHys, 2, sizeof(cl_mem), &clGradNorm);
+	clSetKernelArg(kernelHys, 3, sizeof(cl_sampler), &sampler);
+	clSetKernelArg(kernelHys, 4, sizeof(int), &width);
+	clSetKernelArg(kernelHys, 5, sizeof(int), &height);
+	clSetKernelArg(kernelHys, 6, sizeof(float), &low_threshold);
+	clSetKernelArg(kernelHys, 7, sizeof(float), &high_threshold);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelHys, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelHys);
+
+	memptr = clEnqueueMapImage(clCmdQueue, clEdge, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, NULL);
+	if(width == image_row_pitch)
 		memcpy(edge, memptr, count);
 	else
 	{
-		unsigned char* tmpptr = (unsigned char*)memptr;
-		for(int i=0; i<height; ++i, edge+=width)
-			memcpy(edge, tmpptr, width), tmpptr += image_row_pitch;
+		unsigned char* _Tmpsrc = (unsigned char*)memptr;
+		unsigned char* _Tmpdes = edge;
+		for(int i=0; i<height; ++i, _Tmpdes += width, _Tmpsrc += image_row_pitch)
+			memcpy(_Tmpdes, _Tmpsrc, width);
 	}
-	clEnqueueUnmapMemObject(clCmdQueue, clSrc, memptr, 0, NULL, NULL);
+	clEnqueueUnmapMemObject(clCmdQueue, clEdge, memptr, 0, NULL, NULL);
 
-	memptr = clEnqueueMapImage(clCmdQueue, clGradNorm, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, NULL);
-	if(image_row_pitch == (width << 2))
-		float2double_sse2(pGrad, (float*)memptr, count);
-	else
+	std::vector<unsigned char*> vPtr;
+	vPtr.reserve(count);
+	unsigned char* _Tmp = edge;
+	for(int i=0; i<height; ++i, _Tmp += width)
 	{
-		float* tmpptr = (float*)memptr;
-		for(int i=0; i<height; ++i, pGrad+=width)
-			float2double_sse2(pGrad, tmpptr, width), tmpptr += image_row_pitch;
+		for(int j=0; j<width; ++j)
+		{
+			if(_Tmp[j] == 255)
+			{
+				vPtr.push_back(&_Tmp[j]);
+				while(!vPtr.empty())
+				{
+					unsigned char* cur = vPtr.back();
+					vPtr.pop_back();
+					int len = (int)(cur - edge);
+					int x = len % width;
+					*cur = 255;
+
+					if(len >= width)
+					{
+						if(x > 0 && cur[-width-1] == 128)
+							vPtr.push_back(&cur[-width-1]);
+						if(cur[-width] == 128)
+							vPtr.push_back(&cur[-width]);
+						if(x < width-1 && cur[-width+1] == 128)
+							vPtr.push_back(&cur[-width+1]);
+					}
+					if(x > 0 && cur[-1] == 128)
+						vPtr.push_back(&cur[-1]);
+					if(x < width-1 && cur[1] == 128)
+						vPtr.push_back(&cur[1]);
+					if(len <= count - width)
+					{
+						if(x > 0 && cur[width-1] == 128)
+							vPtr.push_back(&cur[width-1]);
+						if(cur[width] == 128)
+							vPtr.push_back(&cur[width]);
+						if(x < width-1 && cur[width+1] == 128)
+							vPtr.push_back(&cur[width+1]);
+					}
+				}
+			}
+		}
 	}
-	clEnqueueUnmapMemObject(clCmdQueue, clGradNorm, memptr, 0, NULL, NULL);
 
 	clReleaseMemObject(clGradNorm);
 	clReleaseMemObject(clGrad);
 	clReleaseMemObject(clGradX);
 	clReleaseMemObject(clGradY);
-	clReleaseMemObject(clSrc);
-	clReleaseSampler(sampler);
-	return true;
-}
+	clReleaseMemObject(hist);
 
-bool clCannyThinner(unsigned char* des, unsigned char const* src, int width, int height, int iterNum)
-{
-	int count = width * height;
-	cl_image_format imgFormat = { CL_LUMINANCE, CL_UNORM_INT8 };
-	cl_mem clSrc = clCreateImage2D(clContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, &imgFormat, width, height, width, (void*)src, NULL);
+	// Final
+	memptr = clEnqueueMapImage(clCmdQueue, clSrc, CL_TRUE, CL_MAP_WRITE, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, &ret_code);
+	if(image_row_pitch == width)
+		memcmpset((unsigned char*)memptr, edge, count);
+	else
+	{
+		unsigned char* _Tmp = (unsigned char*)memptr;
+		unsigned char* _Tmp0 = edge;
+		for(int i=0; i<height; ++i, _Tmp += image_row_pitch, _Tmp0 += width)
+			memcmpset(_Tmp, _Tmp0, width);
+	}
+	clEnqueueUnmapMemObject(clCmdQueue, clSrc, memptr, 0, NULL, NULL);
+
 	cl_mem clTrans = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL);
-	cl_sampler sampler = clCreateSampler(clContext, CL_FALSE, CL_ADDRESS_CLAMP_TO_EDGE, CL_FILTER_NEAREST, NULL);
 	cl_kernel kernelTrans = clCreateKernel(clPgmBase, "Transpose", NULL);
 	clSetKernelArg(kernelTrans, 0, sizeof(cl_mem), &clTrans);
 	clSetKernelArg(kernelTrans, 1, sizeof(cl_mem), &clSrc);
 	clSetKernelArg(kernelTrans, 2, sizeof(cl_sampler), &sampler);
 	clSetKernelArg(kernelTrans, 3, sizeof(int), &height);
 	clSetKernelArg(kernelTrans, 4, sizeof(int), &width);
-	size_t local_work_size[] = {16, 32};
-	size_t global_work_size[] = {(height+15)&~15, (width+31)&~31};
-	cl_event clEvt = NULL;
-	cl_int errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelTrans, 2, NULL, global_work_size, local_work_size, 0, NULL, &clEvt);
+	std::swap(global_work_size[0], global_work_size[1]);
+	cl_int errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelTrans, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 
 	cl_mem clBackup = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL);
 	cl_mem clTmp = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL);
-	cl_mem clLut1 = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(bLUTArray1), bLUTArray1, NULL);
-	cl_mem clLut2 = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(bLUTArray2), bLUTArray2, NULL);
 	bool done = false;
-	size_t origin[] = {0, 0, 0}, region[] = {height, width, 1};
+	std::swap(region[0], region[1]);
 	cl_kernel kernelApplyLut = clCreateKernel(clPgmBase, "ApplyLut", NULL);
 	int iterates = 1;
 	bool equalC = true;
-	clWaitForEvents(1, &clEvt);
-	clReleaseEvent(clEvt);
+	int iterNum = 1;
 	while(!done)
 	{
-		errcode = clEnqueueCopyImage(clCmdQueue, clTrans, clBackup, origin, origin, region, 0, NULL, &clEvt);
+		errcode = clEnqueueCopyImage(clCmdQueue, clTrans, clBackup, origin, origin, region, 0, NULL, NULL);
 		clSetKernelArg(kernelApplyLut, 0, sizeof(cl_mem), &clTmp);
 		clSetKernelArg(kernelApplyLut, 1, sizeof(cl_mem), &clTrans);
-		clSetKernelArg(kernelApplyLut, 2, sizeof(cl_mem), &clLut1);
+		clSetKernelArg(kernelApplyLut, 2, sizeof(cl_mem), &clLutArray1);
 		clSetKernelArg(kernelApplyLut, 3, sizeof(cl_sampler), &sampler);
 		clSetKernelArg(kernelApplyLut, 4, sizeof(int), &height);
 		clSetKernelArg(kernelApplyLut, 5, sizeof(int), &width);
-		errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelApplyLut, 2, NULL, global_work_size, local_work_size, 1, &clEvt, NULL);
-		clReleaseEvent(clEvt);
+		errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelApplyLut, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 
 		clSetKernelArg(kernelApplyLut, 0, sizeof(cl_mem), &clTrans);
 		clSetKernelArg(kernelApplyLut, 1, sizeof(cl_mem), &clTmp);
-		clSetKernelArg(kernelApplyLut, 2, sizeof(cl_mem), &clLut2);
+		clSetKernelArg(kernelApplyLut, 2, sizeof(cl_mem), &clLutArray2);
 		clSetKernelArg(kernelApplyLut, 3, sizeof(cl_sampler), &sampler);
 		clSetKernelArg(kernelApplyLut, 4, sizeof(int), &height);
 		clSetKernelArg(kernelApplyLut, 5, sizeof(int), &width);
@@ -2009,19 +2125,17 @@ bool clCannyThinner(unsigned char* des, unsigned char const* src, int width, int
 	clSetKernelArg(kernelTrans, 3, sizeof(int), &width);
 	clSetKernelArg(kernelTrans, 4, sizeof(int), &height);
 	std::swap(global_work_size[0], global_work_size[1]);
-	std::swap(local_work_size[0], local_work_size[1]);
 	errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelTrans, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 
-	size_t image_row_pitch = 0;
 	std::swap(region[0], region[1]);
-	void* memptr = clEnqueueMapImage(clCmdQueue, clSrc, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, NULL);
+	memptr = clEnqueueMapImage(clCmdQueue, clSrc, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, NULL);
 	if(image_row_pitch == width)
-		memcpy(des, memptr, count);
+		memcpy(edge, memptr, count);
 	else
 	{
 		unsigned char* tmpptr = (unsigned char*)memptr;
-		for(int i=0; i<height; ++i, tmpptr+=image_row_pitch, des+=width)
-			memcpy(des, tmpptr, width);
+		for(int i=0; i<height; ++i, tmpptr+=image_row_pitch, edge+=width)
+			memcpy(edge, tmpptr, width);
 	}
 	clEnqueueUnmapMemObject(clCmdQueue, clSrc, memptr, 0, NULL, NULL);
 	clReleaseKernel(kernelTrans);
@@ -2029,9 +2143,8 @@ bool clCannyThinner(unsigned char* des, unsigned char const* src, int width, int
 	clReleaseMemObject(clSrc);
 	clReleaseMemObject(clTmp);
 	clReleaseMemObject(clTrans);
-	clReleaseMemObject(clLut1);
-	clReleaseMemObject(clLut2);
 	clReleaseMemObject(clBackup);
+	clReleaseMemObject(clEdge);
 	clReleaseSampler(sampler);
 	return true;
 }

@@ -164,17 +164,9 @@ void DccsCanny::GetCannyEdge(const BYTE* pbImage, const SIZE& szImg,
                              double dbRatioLow, double dbRatioHigh)
 {
 #ifdef SSE_OPTIMIZE
-	int       nLen      = szImg.cx * szImg.cy;
-	double*   pdbImg = NULL;
-	double*   pdbFilterImg = NULL;
-	double*   pdbGradX    = NULL;
-	double*   pdbGradY    = NULL;
-	double*   pdbGradMag  = new double [nLen];
-	BYTE*     pbEdgeTmp = new BYTE[nLen];
-	double    dbThdHigh;
-	double    dbThdLow;
-	clGetCannyEdge(pdbGradMag, pbEdgeTmp, pbImage, szImg.cx, szImg.cy, dbRatioLow, dbRatioHigh, dbThdLow, dbThdHigh);
-#else
+	clGetCannyEdge(pbEdge, pbImage, szImg.cx, szImg.cy, dbRatioLow, dbRatioHigh);
+	return;
+#endif
     // 转化为double 型数据值在[0,1]之间	
     int       nLen      = szImg.cx * szImg.cy;
     double*   pdbImg    = new double [nLen]; 
@@ -209,16 +201,11 @@ void DccsCanny::GetCannyEdge(const BYTE* pbImage, const SIZE& szImg,
     //// 应用non-maximum 抑制
     BYTE*     pbEdgeTmp = new BYTE[nLen];
     NonmaxSuppress(pdbGradMag, pdbGradX, pdbGradY, szImg, pbEdgeTmp);
-#endif
 
     // 应用Hysteresis，找到所有的边界
     Hysteresis(pdbGradMag, szImg, dbThdHigh, dbThdLow, pbEdgeTmp);
 
-#ifdef SSE_OPTIMIZE
-	clCannyThinner(pbEdge, pbEdgeTmp, szImg.cx, szImg.cy, 1);
-#else
     Thinner(pbEdgeTmp, szImg, pbEdge, 1);
-#endif
 
     // 释放内存
     MEMO_FREE_AND_NULL_N(pdbGradX);
