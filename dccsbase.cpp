@@ -19,6 +19,11 @@
 
 #pragma warning(disable: 4996)
 
+#ifdef min
+#undef min
+#undef max
+#endif
+
 // OpenCL resources
 cl_platform_id		clPlatformID = NULL;
 cl_device_id		clDeviceID = NULL;
@@ -110,35 +115,62 @@ __kernel void GradMagnitude(write_only image2d_t des, read_only image2d_t gradX,
 	int2 outCoord = (int2)(get_global_id(0), get_global_id(1));
 	if(outCoord.x < width && outCoord.y < height)
 	{
-		float4 color = pown(read_imagef(gradX, sampler, outCoord), (int4)(2, 2, 2, 2)) + pown(read_imagef(gradY, sampler, outCoord), (int4)(2, 2, 2, 2));
-		write_imagef(des, outCoord, sqrt(color));
+		float x = read_imagef(gradX, sampler, outCoord).x;
+		float y = read_imagef(gradY, sampler, outCoord).x;
+		float color = length((float2)(x, y));
+		write_imagef(des, outCoord, (float4)(color));
 	}
 }
 
-__kernel void GradNorm(write_only image2d_t des, read_only image2d_t src, int width, int height, sampler_t sampler, float maxGrad)
+__kernel void GradMax(global float* des, read_only image2d_t src, sampler_t sampler, int width, int height)
 {
+	local float buffer[16][16];
+	int2 c = (int2)(get_local_id(0), get_local_id(1));
+	buffer[c.y][c.x] = 0.0f;
+	barrier(CLK_LOCAL_MEM_FENCE);
+	for(int y=c.y; y<height; y+=get_local_size(1))
+	{
+		for(int x=c.x; x<width; x+=get_local_size(0))
+			buffer[c.y][c.x] = fmax(buffer[c.y][c.x], read_imagef(src, sampler, (int2)(x, y)).x);
+	}
+	barrier(CLK_LOCAL_MEM_FENCE);
+	for(int s=8; s>0; s>>=1)
+		if(c.x < s)
+			buffer[c.y][c.x] = fmax(buffer[c.y][c.x], buffer[c.y][c.x+s]);
+	barrier(CLK_LOCAL_MEM_FENCE);
+	for(int s=8; s>0; s>>=1)
+		if(c.y < s && c.x == 0)
+			buffer[c.y][0] = fmax(buffer[c.y][0], buffer[c.y+s][0]);
+	barrier(CLK_LOCAL_MEM_FENCE);
+	if(get_local_id(0) == 0 && get_local_id(1) == 0)
+		des[0] = buffer[0][0];
+}
+
+__kernel void GradNorm(write_only image2d_t des, read_only image2d_t src, int width, int height, sampler_t sampler, global float* maxGrad)
+{
+	local float G;
+	if(get_local_id(0) == 0 && get_local_id(1) == 0)
+		G = maxGrad[0];
+	barrier(CLK_LOCAL_MEM_FENCE);
 	int2 outCoord = (int2)(get_global_id(0), get_global_id(1));
 	if(outCoord.x < width && outCoord.y < height)
 	{
-		write_imagef(des, outCoord, read_imagef(src, sampler, outCoord) / maxGrad);
+		write_imagef(des, outCoord, read_imagef(src, sampler, outCoord) / G);
 	}
 }
 
 __kernel void GradHist(global int* hist, read_only image2d_t grad, global float const* buffer, int width, int height, sampler_t sampler)
 {
 	local float cbuffer[64];
+	local int chist[64];
 	if(get_local_id(1) < 4)
 	{
 		int idx = get_local_id(1)*16 + get_local_id(0);
 		cbuffer[idx] = buffer[idx];
+		chist[idx] = 0;
 	}
 	barrier(CLK_LOCAL_MEM_FENCE);
 	int2 outCoord = (int2)(get_global_id(0), get_global_id(1));
-	if(outCoord.x == 0 && outCoord.y == 0)
-	{
-		for(int i=0; i<64; ++i)
-			hist[i] = 0;
-	}
 	if(outCoord.x < width && outCoord.y < height)
 	{
 		float v = read_imagef(grad, sampler, outCoord).x;
@@ -146,10 +178,45 @@ __kernel void GradHist(global int* hist, read_only image2d_t grad, global float 
 		{
 			if(v < cbuffer[i])
 			{
-				atomic_inc(&hist[i]);
+				atomic_inc(&chist[i]);
 				break;
 			}
 		}
+	}
+	barrier(CLK_LOCAL_MEM_FENCE);
+	if(get_global_id(1) < 4 && get_global_id(0) < 16)
+		hist[get_global_id(1)*16 + get_global_id(0)] = 0;
+	barrier(CLK_GLOBAL_MEM_FENCE);
+	if(get_local_id(1) < 4)
+	{
+		int idx = get_local_id(1)*16 + get_local_id(0);
+		atomic_add(&hist[idx], chist[idx]);
+	}
+}
+
+__kernel void CalcThreshold(global float* buffer, float highRatio, float lowRatio, int count)
+{
+	local int cbuffer[64];
+	cbuffer[get_global_id(0)] = ((int*)buffer)[get_global_id(0)];
+	barrier(CLK_LOCAL_MEM_FENCE);
+	float highTh = 0.0f;
+	float lowTh = 0.0f;
+	float TH = highRatio * count;
+	if(get_local_id(0) == 0)
+	{
+		for(int i=1; i<64; ++i)
+			cbuffer[i] += cbuffer[i-1];
+		for(int i=0; i<64; ++i)
+		{
+			if(cbuffer[i] > TH)
+			{
+				highTh = (i+1)*(1.0f/64);
+				break;
+			}
+		}
+		lowTh = highTh * lowRatio;
+		buffer[0] = lowTh;
+		buffer[1] = highTh;
 	}
 }
 
@@ -210,16 +277,20 @@ __kernel void NonMaxSuppress(write_only image2d_t des, read_only image2d_t GradX
 	}
 }
 
-__kernel void Hysteresis(write_only image2d_t des, read_only image2d_t src, read_only image2d_t grad, sampler_t sampler, int width, int height, float low, float high)
+__kernel void Hysteresis(write_only image2d_t des, read_only image2d_t src, read_only image2d_t grad, sampler_t sampler, int width, int height, global float* thresh)
 {
+	local float buffer[2];
+	if(get_local_id(1) == 0 && get_local_id(0) < 2)
+		buffer[get_local_id(0)] = thresh[get_local_id(0)];
+	barrier(CLK_LOCAL_MEM_FENCE);
 	int2 coord = (int2)(get_global_id(0), get_global_id(1));
 	if(coord.x < width && coord.y < height)
 	{
 		float c = read_imagef(src, sampler, coord).x;
 		float g = read_imagef(grad, sampler, coord).x;
-		if(fabs(c-0.5f)<0.01f && g >= high)
+		if(fabs(c-0.5f)<0.01f && g >= buffer[1])
 			write_imagef(des, coord, (float4)(1.0f));
-		else if(fabs(c-0.5f)<0.01f && g >= low)
+		else if(fabs(c-0.5f)<0.01f && g >= buffer[0])
 			write_imagef(des, coord, (float4)(0.5f));
 		else
 			write_imagef(des, coord, (float4)(0.0f));
@@ -1839,8 +1910,8 @@ bool clGetCannyEdge(unsigned char* edge,
 	clSetKernelArg(kernelGaussianSmooth, 5, sizeof(cl_sampler), &sampler);
 	size_t local_work_size[] = {16, 16};
 	size_t global_work_size[] = {(width+15)&~15, (height+15)&~15};
-	cl_event clEvt[2];
-	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianSmooth, 2, NULL, global_work_size, local_work_size, 0, NULL, clEvt);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianSmooth, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelGaussianSmooth);
 
 	cl_mem clSmoothY = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL);
 	cl_kernel kernelGaussianSmoothY = clCreateKernel(clPgmBase, "GaussianSmoothY", NULL);
@@ -1850,8 +1921,8 @@ bool clGetCannyEdge(unsigned char* edge,
 	clSetKernelArg(kernelGaussianSmoothY, 3, sizeof(int), &width);
 	clSetKernelArg(kernelGaussianSmoothY, 4, sizeof(int), &height);
 	clSetKernelArg(kernelGaussianSmoothY, 5, sizeof(cl_sampler), &sampler);
-	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianSmoothY, 2, NULL, global_work_size, local_work_size, 1, clEvt, &clEvt[1]);
-	clReleaseEvent(clEvt[0]);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianSmoothY, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelGaussianSmoothY);
 
 	// Gaussian Filter
 	cl_kernel kernelGaussianFilter = clCreateKernel(clPgmBase, "Gaussian2DReplicate", NULL);
@@ -1861,13 +1932,8 @@ bool clGetCannyEdge(unsigned char* edge,
 	clSetKernelArg(kernelGaussianFilter, 3, sizeof(int), &width);
 	clSetKernelArg(kernelGaussianFilter, 4, sizeof(int), &height);
 	clSetKernelArg(kernelGaussianFilter, 5, sizeof(cl_sampler), &sampler);
-	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianFilter, 2, NULL, global_work_size, local_work_size, 1, &clEvt[1], clEvt);
-	clReleaseEvent(clEvt[1]);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianFilter, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	cl_mem clGradX = clSmooth;
-	clSmooth = NULL;
-
-	clReleaseKernel(kernelGaussianSmooth);
-	clReleaseKernel(kernelGaussianSmoothY);
 
 	cl_mem clGradY = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL);
 	clSetKernelArg(kernelGaussianFilter, 0, sizeof(cl_mem), &clGradY);
@@ -1876,11 +1942,10 @@ bool clGetCannyEdge(unsigned char* edge,
 	clSetKernelArg(kernelGaussianFilter, 3, sizeof(int), &width);
 	clSetKernelArg(kernelGaussianFilter, 4, sizeof(int), &height);
 	clSetKernelArg(kernelGaussianFilter, 5, sizeof(cl_sampler), &sampler);
-	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianFilter, 2, NULL, global_work_size, local_work_size, 1, clEvt, &clEvt[1]);
-	clReleaseEvent(clEvt[0]);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianFilter, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelGaussianFilter);
 
 	cl_mem clGrad = clSmoothY;
-	clSmoothY = NULL;
 	cl_kernel kernelGradMagnitude = clCreateKernel(clPgmBase, "GradMagnitude", NULL);
 	clSetKernelArg(kernelGradMagnitude, 0, sizeof(cl_mem), &clGrad);
 	clSetKernelArg(kernelGradMagnitude, 1, sizeof(cl_mem), &clGradX);
@@ -1888,30 +1953,20 @@ bool clGetCannyEdge(unsigned char* edge,
 	clSetKernelArg(kernelGradMagnitude, 3, sizeof(int), &width);
 	clSetKernelArg(kernelGradMagnitude, 4, sizeof(int), &height);
 	clSetKernelArg(kernelGradMagnitude, 5, sizeof(cl_sampler), &sampler);
-	cl_event clEvtSwap;
-	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGradMagnitude, 2, NULL, global_work_size, local_work_size, 1, &clEvt[1], &clEvtSwap);
-	clReleaseEvent(clEvt[1]);
-	clReleaseKernel(kernelGaussianFilter);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGradMagnitude, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelGradMagnitude);
 
 	size_t image_row_pitch = 0;
 	size_t origin[] = { 0, 0, 0 }, region[] = { width, height, 1 };
-	void* memptr = clEnqueueMapImage(clCmdQueue, clGrad, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 1, &clEvtSwap, NULL, NULL);
-	clReleaseEvent(clEvtSwap);
-	clReleaseKernel(kernelGradMagnitude);
-	float maxGrad = 0;
-	if(image_row_pitch == (width << 2))
-		maxGrad = maxfloat_sse2((float*)memptr, count);
-	else
-	{
-		float* tmpptr = (float*)memptr;
-		for(int i=0; i<height; ++i)
-		{
-			float tmpv = maxfloat_sse2(tmpptr, width);
-			maxGrad = std::max(maxGrad, tmpv);
-			tmpptr = (float*)((char*)tmpptr + image_row_pitch);
-		}
-	}
-	clEnqueueUnmapMemObject(clCmdQueue, clGrad, memptr, 0, NULL, NULL);
+	cl_mem maxGrad = clCreateBuffer(clContext, CL_MEM_READ_WRITE, 64*sizeof(float), NULL, NULL);
+	cl_kernel kernelGradMax = clCreateKernel(clPgmBase, "GradMax", NULL);
+	clSetKernelArg(kernelGradMax, 0, sizeof(cl_mem), &maxGrad);
+	clSetKernelArg(kernelGradMax, 1, sizeof(cl_mem), &clGrad);
+	clSetKernelArg(kernelGradMax, 2, sizeof(cl_sampler), &sampler);
+	clSetKernelArg(kernelGradMax, 3, sizeof(int), &width);
+	clSetKernelArg(kernelGradMax, 4, sizeof(int), &height);
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGradMax, 2, NULL, local_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelGradMax);
 
 	cl_mem clGradNorm = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL);
 	cl_kernel kernelGradInv = clCreateKernel(clPgmBase, "GradNorm", NULL);
@@ -1920,11 +1975,11 @@ bool clGetCannyEdge(unsigned char* edge,
 	clSetKernelArg(kernelGradInv, 2, sizeof(int), &width);
 	clSetKernelArg(kernelGradInv, 3, sizeof(int), &height);
 	clSetKernelArg(kernelGradInv, 4, sizeof(cl_sampler), &sampler);
-	clSetKernelArg(kernelGradInv, 5, sizeof(float), &maxGrad);
+	clSetKernelArg(kernelGradInv, 5, sizeof(cl_mem), &maxGrad);
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGradInv, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelGradInv);
 
-	cl_mem hist = clCreateBuffer(clContext, CL_MEM_READ_WRITE, 64*sizeof(int), NULL, NULL);
+	cl_mem hist = maxGrad;
 	cl_kernel kernelHist = clCreateKernel(clPgmBase, "GradHist", NULL);
 	clSetKernelArg(kernelHist, 0, sizeof(cl_mem), &hist);
 	clSetKernelArg(kernelHist, 1, sizeof(cl_mem), &clGradNorm);
@@ -1934,27 +1989,18 @@ bool clGetCannyEdge(unsigned char* edge,
 	clSetKernelArg(kernelHist, 5, sizeof(cl_sampler), &sampler);
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelHist, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelHist);
-	
-	memptr = clEnqueueMapBuffer(clCmdQueue, hist, CL_TRUE, CL_MAP_READ, 0, 64*sizeof(int), 0, NULL, NULL, NULL);
-	int accuhist[64];
-	accuhist[0] = ((int*)memptr)[0];
-	for(int i=1; i<64; ++i)
-		accuhist[i] = accuhist[i-1] + ((int*)memptr)[i];
-	clEnqueueUnmapMemObject(clCmdQueue, hist, memptr, 0, NULL, NULL);
 
-	double TH = ratioHigh * count;
-	float high_threshold = 0.0f;
-	float low_threshold = 0.0f;
-	for(int i=0; i<64; ++i)
-	{
-		if (accuhist[i] > TH)
-		{
-			high_threshold = (float)((i + 1) * (1.0/64));
-			break;
-		}
-	}
-	low_threshold = (float)(ratioLow * high_threshold);
-	
+	cl_kernel kernalTH = clCreateKernel(clPgmBase, "CalcThreshold", NULL);
+	clSetKernelArg(kernalTH, 0, sizeof(cl_mem), &hist);
+	float fHighR = (float)ratioHigh;
+	float fLowR = (float)ratioLow;
+	clSetKernelArg(kernalTH, 1, sizeof(float), &fHighR);
+	clSetKernelArg(kernalTH, 2, sizeof(float), &fLowR);
+	clSetKernelArg(kernalTH, 3, sizeof(int), &count);
+	size_t work_size = 64;
+	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernalTH, 1, NULL, &work_size, &work_size, 0, NULL, NULL);
+	clReleaseKernel(kernalTH);
+
 	// Non-maximum suppress
 	cl_kernel kernelNonMaxSuppress = clCreateKernel(clPgmBase, "NonMaxSuppress", NULL);
 	clSetKernelArg(kernelNonMaxSuppress, 0, sizeof(cl_mem), &clSrc);
@@ -1977,12 +2023,11 @@ bool clGetCannyEdge(unsigned char* edge,
 	clSetKernelArg(kernelHys, 3, sizeof(cl_sampler), &sampler);
 	clSetKernelArg(kernelHys, 4, sizeof(int), &width);
 	clSetKernelArg(kernelHys, 5, sizeof(int), &height);
-	clSetKernelArg(kernelHys, 6, sizeof(float), &low_threshold);
-	clSetKernelArg(kernelHys, 7, sizeof(float), &high_threshold);
+	clSetKernelArg(kernelHys, 6, sizeof(cl_mem), &hist);
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelHys, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelHys);
 
-	memptr = clEnqueueMapImage(clCmdQueue, clEdge, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, NULL);
+	void* memptr = clEnqueueMapImage(clCmdQueue, clEdge, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, NULL);
 	if(width == image_row_pitch)
 		memcpy(edge, memptr, count);
 	else
