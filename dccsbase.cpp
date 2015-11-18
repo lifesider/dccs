@@ -297,6 +297,16 @@ __kernel void Hysteresis(write_only image2d_t des, read_only image2d_t src, read
 	}
 }
 
+__kernel void TransposeSet(write_only image2d_t des, read_only image2d_t src, sampler_t sampler, int width, int height)
+{
+	int2 coord = (int2)(get_global_id(0), get_global_id(1));
+	if(coord.x < width && coord.y < height)
+	{
+		float c = read_imagef(src, sampler, (int2)(coord.y, coord.x)).x;
+		write_imagef(des, coord, (float4)(c == 1.f ? 1.f : 0.f));
+	}
+}
+
 __kernel void Transpose(write_only image2d_t des, read_only image2d_t src, sampler_t sampler, int width, int height)
 {
 	int2 coord = (int2)(get_global_id(0), get_global_id(1));
@@ -1604,42 +1614,6 @@ loop_end:
 	}
 }
 
-inline float maxfloat_sse2(float const* src, size_t count)
-{
-	float v = 0;
-	__asm
-	{
-		mov			ecx_ptr, count;
-		mov			esi_ptr, src;
-		xorps		xmm0, xmm0;
-		sub			ecx_ptr, 8;
-		jl			loop_1_pre;
-loop_8:
-		movups		xmm1, [esi_ptr];
-		movups		xmm2, [esi_ptr + 0x10];
-		maxps		xmm0, xmm1;
-		maxps		xmm0, xmm2;
-		add			esi_ptr, 0x20;
-		sub			ecx_ptr, 8;
-		jge			loop_8;
-		movhlps		xmm1, xmm0;
-		maxps		xmm0, xmm1;
-		pshufd		xmm1, xmm0, 1;
-		maxss		xmm0, xmm1;
-loop_1_pre:
-		add			ecx_ptr, 8;
-		jz			loop_end;
-loop_1:
-		maxss		xmm0, [esi_ptr];
-		add			esi_ptr, 4;
-		dec			ecx_ptr;
-		jnz			loop_1;
-loop_end:
-		movss		v, xmm0;
-	}
-	return v;
-}
-
 inline void memcmpset(unsigned char* des, unsigned char* src, int count)
 {
 	__asm
@@ -2027,18 +2001,7 @@ bool clGetCannyEdge(unsigned char* edge,
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelHys, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelHys);
 
-	void* memptr = clEnqueueMapImage(clCmdQueue, clEdge, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, NULL);
-	if(width == image_row_pitch)
-		memcpy(edge, memptr, count);
-	else
-	{
-		unsigned char* _Tmpsrc = (unsigned char*)memptr;
-		unsigned char* _Tmpdes = edge;
-		for(int i=0; i<height; ++i, _Tmpdes += width, _Tmpsrc += image_row_pitch)
-			memcpy(_Tmpdes, _Tmpsrc, width);
-	}
-	clEnqueueUnmapMemObject(clCmdQueue, clEdge, memptr, 0, NULL, NULL);
-
+	ret_code = clEnqueueReadImage(clCmdQueue, clEdge, CL_TRUE, origin, region, 0, 0, edge, 0, NULL, NULL);
 	std::vector<unsigned char*> vPtr;
 	vPtr.reserve(count);
 	unsigned char* _Tmp = edge;
@@ -2056,7 +2019,6 @@ bool clGetCannyEdge(unsigned char* edge,
 					int len = (int)(cur - edge);
 					int x = len % width;
 					*cur = 255;
-
 					if(len >= width)
 					{
 						if(x > 0 && cur[-width-1] == 128)
@@ -2091,27 +2053,17 @@ bool clGetCannyEdge(unsigned char* edge,
 	clReleaseMemObject(hist);
 
 	// Final
-	memptr = clEnqueueMapImage(clCmdQueue, clSrc, CL_TRUE, CL_MAP_WRITE, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, &ret_code);
-	if(image_row_pitch == width)
-		memcmpset((unsigned char*)memptr, edge, count);
-	else
-	{
-		unsigned char* _Tmp = (unsigned char*)memptr;
-		unsigned char* _Tmp0 = edge;
-		for(int i=0; i<height; ++i, _Tmp += image_row_pitch, _Tmp0 += width)
-			memcmpset(_Tmp, _Tmp0, width);
-	}
-	clEnqueueUnmapMemObject(clCmdQueue, clSrc, memptr, 0, NULL, NULL);
-
+	clEnqueueWriteImage(clCmdQueue, clSrc, CL_TRUE, origin, region, 0, 0, edge, 0, NULL, NULL);
 	cl_mem clTrans = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL);
-	cl_kernel kernelTrans = clCreateKernel(clPgmBase, "Transpose", NULL);
-	clSetKernelArg(kernelTrans, 0, sizeof(cl_mem), &clTrans);
-	clSetKernelArg(kernelTrans, 1, sizeof(cl_mem), &clSrc);
-	clSetKernelArg(kernelTrans, 2, sizeof(cl_sampler), &sampler);
-	clSetKernelArg(kernelTrans, 3, sizeof(int), &height);
-	clSetKernelArg(kernelTrans, 4, sizeof(int), &width);
+	cl_kernel kernelTransSet = clCreateKernel(clPgmBase, "TransposeSet", NULL);
+	clSetKernelArg(kernelTransSet, 0, sizeof(cl_mem), &clTrans);
+	clSetKernelArg(kernelTransSet, 1, sizeof(cl_mem), &clSrc);
+	clSetKernelArg(kernelTransSet, 2, sizeof(cl_sampler), &sampler);
+	clSetKernelArg(kernelTransSet, 3, sizeof(int), &height);
+	clSetKernelArg(kernelTransSet, 4, sizeof(int), &width);
 	std::swap(global_work_size[0], global_work_size[1]);
-	cl_int errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelTrans, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	cl_int errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelTransSet, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelTransSet);
 
 	cl_mem clBackup = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL);
 	cl_mem clTmp = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL);
@@ -2140,6 +2092,7 @@ bool clGetCannyEdge(unsigned char* edge,
 		clSetKernelArg(kernelApplyLut, 5, sizeof(int), &width);
 		errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelApplyLut, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 
+#if 0	// 目前只需要处理一次
 		size_t row_pitch0 = 0;
 		void* ptr0 = clEnqueueMapImage(clCmdQueue, clBackup, CL_TRUE, CL_MAP_READ, origin, region, &row_pitch0, NULL, 0, NULL, NULL, NULL);
 		size_t row_pitch1 = 0;
@@ -2159,11 +2112,13 @@ bool clGetCannyEdge(unsigned char* edge,
 		}
 		clEnqueueUnmapMemObject(clCmdQueue, clBackup, ptr0, 0, NULL, NULL);
 		clEnqueueUnmapMemObject(clCmdQueue, clTrans, ptr1, 0, NULL, NULL);
+#endif
 
 		done = (iterates >= iterNum) | equalC;
 		iterates++;
 	}
 
+	cl_kernel kernelTrans = clCreateKernel(clPgmBase, "Transpose", NULL);
 	clSetKernelArg(kernelTrans, 0, sizeof(cl_mem), &clSrc);
 	clSetKernelArg(kernelTrans, 1, sizeof(cl_mem), &clTrans);
 	clSetKernelArg(kernelTrans, 2, sizeof(cl_sampler), &sampler);
@@ -2173,16 +2128,8 @@ bool clGetCannyEdge(unsigned char* edge,
 	errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelTrans, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 
 	std::swap(region[0], region[1]);
-	memptr = clEnqueueMapImage(clCmdQueue, clSrc, CL_TRUE, CL_MAP_READ, origin, region, &image_row_pitch, NULL, 0, NULL, NULL, NULL);
-	if(image_row_pitch == width)
-		memcpy(edge, memptr, count);
-	else
-	{
-		unsigned char* tmpptr = (unsigned char*)memptr;
-		for(int i=0; i<height; ++i, tmpptr+=image_row_pitch, edge+=width)
-			memcpy(edge, tmpptr, width);
-	}
-	clEnqueueUnmapMemObject(clCmdQueue, clSrc, memptr, 0, NULL, NULL);
+	errcode = clEnqueueReadImage(clCmdQueue, clSrc, CL_TRUE, origin, region, 0, 0, edge, 0, NULL, NULL);
+
 	clReleaseKernel(kernelTrans);
 	clReleaseKernel(kernelApplyLut);
 	clReleaseMemObject(clSrc);
