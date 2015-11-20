@@ -1665,7 +1665,7 @@ decl_align(float, 16, g_pfKernel2D_X[81]) = {
 	0.000259063973527119f,      0.00643426542717393f,        0.0522569331387397f,         0.117099663048638f, 0  ,      -0.117099663048638f,       -0.0522569331387397f,      -0.00643426542717393f, -0.000259063973527119f,
 	5.78049859017946e-005f,       0.00143567867520282f,        0.0116600978601128f,        0.0261284665693698f, 0 ,      -0.0261284665693698f ,      -0.0116600978601128f,      -0.00143567867520282f, -5.78049859017946e-005f,
 	4.7449221882033e-006f,      0.000117847682078385f,      0.000957119116801882f,       0.00214475514239131f, 0  ,    -0.00214475514239131f,     -0.000957119116801882f,     -0.000117847682078385f, -4.7449221882033e-006f,
-	1.43284234626241e-007f,     3.55869164115247e-006f,     2.89024929508973e-005f,     6.47659933817797e-005f, 0    -6.47659933817797e-005f,    -2.89024929508973e-005f,    -3.55869164115247e-006f, -1.43284234626241e-007f
+	1.43284234626241e-007f,     3.55869164115247e-006f,     2.89024929508973e-005f,     6.47659933817797e-005f, 0,    -6.47659933817797e-005f,    -2.89024929508973e-005f,    -3.55869164115247e-006f, -1.43284234626241e-007f
 };
 
 decl_align(float, 16, g_pfKernel2D_Y[81]) = {
@@ -1844,6 +1844,18 @@ bool release_platform()
 	return true;
 }
 
+template<>
+class std::auto_ptr<cl_mem>
+{
+public:
+	explicit auto_ptr(cl_mem _Mem = NULL) : _Mymem(_Mem) {}
+	operator cl_mem() const { return _Mymem; }
+	~auto_ptr() { if(_Mymem != NULL) clReleaseMemObject(_Mymem); _Mymem = NULL; }
+
+private:
+	cl_mem	_Mymem;
+};
+
 bool clGetCannyEdge(unsigned char* edge,
 					unsigned char const* image,
 					int width,
@@ -1853,29 +1865,25 @@ bool clGetCannyEdge(unsigned char* edge,
 {
 	int count = width * height;
 	cl_image_format imgFormat = { CL_LUMINANCE, CL_UNORM_INT8 };
-	cl_mem clSrc = clCreateImage2D(clContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, &imgFormat, width, height, width, (void*)image, NULL);
-	if(clSrc == NULL)
+	typedef std::auto_ptr<cl_mem> mem_type;
+	mem_type clSrc(clCreateImage2D(clContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, &imgFormat, width, height, width, (void*)image, NULL));
+	mem_type clEdge(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL));
+	mem_type clTrans(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL));
+	mem_type clBackup(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL));
+	mem_type clTmp(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL));
+	imgFormat.image_channel_data_type = CL_FLOAT;
+	mem_type clSmooth(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL));
+	mem_type clSmoothY(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL));
+	mem_type clGradY(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL));
+	mem_type clGradNorm(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL));
+
+	if(!clSrc || !clEdge || !clTrans || !clBackup || !clTmp || !clSmooth || !clSmoothY || !clGradY || !clGradNorm)
 		return false;
 
 	// Gaussian Smooth
-	imgFormat.image_channel_data_type = CL_FLOAT;
-	cl_mem clSmooth = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL);
-	if(clSmooth == NULL)
-	{
-		clReleaseMemObject(clSrc);
-		return false;
-	}
-
 	cl_int ret_code = CL_SUCCESS;
-	cl_kernel kernelGaussianSmooth = clCreateKernel(clPgmBase, "GaussianSmoothX", &ret_code);
-	if(kernelGaussianSmooth == NULL)
-	{
-		clReleaseMemObject(clSrc);
-		clReleaseMemObject(clSmooth);
-		return false;
-	}
-
 	cl_sampler sampler = clCreateSampler(clContext, CL_FALSE, CL_ADDRESS_CLAMP_TO_EDGE, CL_FILTER_NEAREST, NULL);
+	cl_kernel kernelGaussianSmooth = clCreateKernel(clPgmBase, "GaussianSmoothX", &ret_code);
 	clSetKernelArg(kernelGaussianSmooth, 0, sizeof(cl_mem), &clSmooth);
 	clSetKernelArg(kernelGaussianSmooth, 1, sizeof(cl_mem), &clSrc);
 	clSetKernelArg(kernelGaussianSmooth, 2, sizeof(cl_mem), &clSmooth1D);
@@ -1887,7 +1895,6 @@ bool clGetCannyEdge(unsigned char* edge,
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianSmooth, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelGaussianSmooth);
 
-	cl_mem clSmoothY = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL);
 	cl_kernel kernelGaussianSmoothY = clCreateKernel(clPgmBase, "GaussianSmoothY", NULL);
 	clSetKernelArg(kernelGaussianSmoothY, 0, sizeof(cl_mem), &clSmoothY);
 	clSetKernelArg(kernelGaussianSmoothY, 1, sizeof(cl_mem), &clSmooth);
@@ -1909,7 +1916,6 @@ bool clGetCannyEdge(unsigned char* edge,
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianFilter, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	cl_mem clGradX = clSmooth;
 
-	cl_mem clGradY = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL);
 	clSetKernelArg(kernelGaussianFilter, 0, sizeof(cl_mem), &clGradY);
 	clSetKernelArg(kernelGaussianFilter, 1, sizeof(cl_mem), &clSmoothY);
 	clSetKernelArg(kernelGaussianFilter, 2, sizeof(cl_mem), &clSmooth2DY);
@@ -1942,7 +1948,6 @@ bool clGetCannyEdge(unsigned char* edge,
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGradMax, 2, NULL, local_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelGradMax);
 
-	cl_mem clGradNorm = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL);
 	cl_kernel kernelGradInv = clCreateKernel(clPgmBase, "GradNorm", NULL);
 	clSetKernelArg(kernelGradInv, 0, sizeof(cl_mem), &clGradNorm);
 	clSetKernelArg(kernelGradInv, 1, sizeof(cl_mem), &clGrad);
@@ -1989,8 +1994,6 @@ bool clGetCannyEdge(unsigned char* edge,
 
 	// Hysteresis
 	cl_kernel kernelHys = clCreateKernel(clPgmBase, "Hysteresis", NULL);
-	imgFormat.image_channel_data_type = CL_UNORM_INT8;
-	cl_mem clEdge = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL);
 	clSetKernelArg(kernelHys, 0, sizeof(cl_mem), &clEdge);
 	clSetKernelArg(kernelHys, 1, sizeof(cl_mem), &clSrc);
 	clSetKernelArg(kernelHys, 2, sizeof(cl_mem), &clGradNorm);
@@ -2046,15 +2049,8 @@ bool clGetCannyEdge(unsigned char* edge,
 		}
 	}
 
-	clReleaseMemObject(clGradNorm);
-	clReleaseMemObject(clGrad);
-	clReleaseMemObject(clGradX);
-	clReleaseMemObject(clGradY);
-	clReleaseMemObject(hist);
-
 	// Final
 	clEnqueueWriteImage(clCmdQueue, clSrc, CL_TRUE, origin, region, 0, 0, edge, 0, NULL, NULL);
-	cl_mem clTrans = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL);
 	cl_kernel kernelTransSet = clCreateKernel(clPgmBase, "TransposeSet", NULL);
 	clSetKernelArg(kernelTransSet, 0, sizeof(cl_mem), &clTrans);
 	clSetKernelArg(kernelTransSet, 1, sizeof(cl_mem), &clSrc);
@@ -2065,8 +2061,6 @@ bool clGetCannyEdge(unsigned char* edge,
 	cl_int errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelTransSet, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelTransSet);
 
-	cl_mem clBackup = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL);
-	cl_mem clTmp = clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL);
 	bool done = false;
 	std::swap(region[0], region[1]);
 	cl_kernel kernelApplyLut = clCreateKernel(clPgmBase, "ApplyLut", NULL);
@@ -2075,7 +2069,9 @@ bool clGetCannyEdge(unsigned char* edge,
 	int iterNum = 1;
 	while(!done)
 	{
+#ifdef THINNER_MORE
 		errcode = clEnqueueCopyImage(clCmdQueue, clTrans, clBackup, origin, origin, region, 0, NULL, NULL);
+#endif
 		clSetKernelArg(kernelApplyLut, 0, sizeof(cl_mem), &clTmp);
 		clSetKernelArg(kernelApplyLut, 1, sizeof(cl_mem), &clTrans);
 		clSetKernelArg(kernelApplyLut, 2, sizeof(cl_mem), &clLutArray1);
@@ -2092,7 +2088,7 @@ bool clGetCannyEdge(unsigned char* edge,
 		clSetKernelArg(kernelApplyLut, 5, sizeof(int), &width);
 		errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelApplyLut, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 
-#if 0	// 目前只需要处理一次
+#ifdef THINNER_MORE
 		size_t row_pitch0 = 0;
 		void* ptr0 = clEnqueueMapImage(clCmdQueue, clBackup, CL_TRUE, CL_MAP_READ, origin, region, &row_pitch0, NULL, 0, NULL, NULL, NULL);
 		size_t row_pitch1 = 0;
@@ -2126,17 +2122,12 @@ bool clGetCannyEdge(unsigned char* edge,
 	clSetKernelArg(kernelTrans, 4, sizeof(int), &height);
 	std::swap(global_work_size[0], global_work_size[1]);
 	errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelTrans, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelTrans);
+	clReleaseKernel(kernelApplyLut);
+	clReleaseSampler(sampler);
 
 	std::swap(region[0], region[1]);
 	errcode = clEnqueueReadImage(clCmdQueue, clSrc, CL_TRUE, origin, region, 0, 0, edge, 0, NULL, NULL);
-
-	clReleaseKernel(kernelTrans);
-	clReleaseKernel(kernelApplyLut);
-	clReleaseMemObject(clSrc);
-	clReleaseMemObject(clTmp);
-	clReleaseMemObject(clTrans);
-	clReleaseMemObject(clBackup);
-	clReleaseMemObject(clEdge);
-	clReleaseSampler(sampler);
+	// Done
 	return true;
 }
