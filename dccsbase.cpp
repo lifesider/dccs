@@ -184,9 +184,6 @@ __kernel void GradHist(global int* hist, read_only image2d_t grad, global float 
 		}
 	}
 	barrier(CLK_LOCAL_MEM_FENCE);
-	if(get_global_id(1) < 4 && get_global_id(0) < 16)
-		hist[get_global_id(1)*16 + get_global_id(0)] = 0;
-	barrier(CLK_GLOBAL_MEM_FENCE);
 	if(get_local_id(1) < 4)
 	{
 		int idx = get_local_id(1)*16 + get_local_id(0);
@@ -1960,6 +1957,7 @@ bool clGetCannyEdge(unsigned char* edge,
 
 	cl_mem hist = maxGrad;
 	cl_kernel kernelHist = clCreateKernel(clPgmBase, "GradHist", NULL);
+	ret_code = clEnqueueFillBuffer(clCmdQueue, hist, origin, sizeof(size_t), 0, 64*sizeof(int), 0, NULL, NULL);
 	clSetKernelArg(kernelHist, 0, sizeof(cl_mem), &hist);
 	clSetKernelArg(kernelHist, 1, sizeof(cl_mem), &clGradNorm);
 	clSetKernelArg(kernelHist, 2, sizeof(cl_mem), &clFactorRegion);
@@ -1982,7 +1980,7 @@ bool clGetCannyEdge(unsigned char* edge,
 
 	// Non-maximum suppress
 	cl_kernel kernelNonMaxSuppress = clCreateKernel(clPgmBase, "NonMaxSuppress", NULL);
-	clSetKernelArg(kernelNonMaxSuppress, 0, sizeof(cl_mem), &clSrc);
+	clSetKernelArg(kernelNonMaxSuppress, 0, sizeof(cl_mem), &clEdge);
 	clSetKernelArg(kernelNonMaxSuppress, 1, sizeof(cl_mem), &clGradX);
 	clSetKernelArg(kernelNonMaxSuppress, 2, sizeof(cl_mem), &clGradY);
 	clSetKernelArg(kernelNonMaxSuppress, 3, sizeof(cl_mem), &clGradNorm);
@@ -1994,8 +1992,8 @@ bool clGetCannyEdge(unsigned char* edge,
 
 	// Hysteresis
 	cl_kernel kernelHys = clCreateKernel(clPgmBase, "Hysteresis", NULL);
-	clSetKernelArg(kernelHys, 0, sizeof(cl_mem), &clEdge);
-	clSetKernelArg(kernelHys, 1, sizeof(cl_mem), &clSrc);
+	clSetKernelArg(kernelHys, 0, sizeof(cl_mem), &clSrc);
+	clSetKernelArg(kernelHys, 1, sizeof(cl_mem), &clEdge);
 	clSetKernelArg(kernelHys, 2, sizeof(cl_mem), &clGradNorm);
 	clSetKernelArg(kernelHys, 3, sizeof(cl_sampler), &sampler);
 	clSetKernelArg(kernelHys, 4, sizeof(int), &width);
@@ -2004,7 +2002,7 @@ bool clGetCannyEdge(unsigned char* edge,
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelHys, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelHys);
 
-	ret_code = clEnqueueReadImage(clCmdQueue, clEdge, CL_TRUE, origin, region, 0, 0, edge, 0, NULL, NULL);
+	ret_code = clEnqueueReadImage(clCmdQueue, clSrc, CL_TRUE, origin, region, 0, 0, edge, 0, NULL, NULL);
 	std::vector<unsigned char*> vPtr;
 	vPtr.reserve(count);
 	unsigned char* _Tmp = edge;
@@ -2128,6 +2126,7 @@ bool clGetCannyEdge(unsigned char* edge,
 
 	std::swap(region[0], region[1]);
 	errcode = clEnqueueReadImage(clCmdQueue, clSrc, CL_TRUE, origin, region, 0, 0, edge, 0, NULL, NULL);
+
 	// Done
 	return true;
 }
