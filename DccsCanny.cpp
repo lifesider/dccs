@@ -598,12 +598,16 @@ void DccsCanny::EstimateThreshold(const double* pdbMag, const SIZE& szMag,
         {
 #ifdef SSE_OPTIMIZE
 			if(*p < s_dbFactorRegon64[2*k+1])
+			{
+				pnHist[k]++;
+				break;
+			}
 #else
             if (*p >= s_dbFactorRegon64[2 * k] && *p < s_dbFactorRegon64[2 * k + 1])
-#endif
             {
                 pnHist[k]++;
             }
+#endif
         }
     }
 

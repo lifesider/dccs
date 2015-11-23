@@ -1314,7 +1314,7 @@ loop_1:
 		movsd		xmm1, [esi_ptr];
 		movsd		xmm2, [edi_ptr];
 		mulsd		xmm1, xmm0;
-		mulsd		xmm1, xmm2;
+		addsd		xmm1, xmm2;
 		movsd		[edi_ptr], xmm1;
 loop_end:
 	}
