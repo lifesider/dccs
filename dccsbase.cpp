@@ -1805,6 +1805,7 @@ bool init_platform(int platformID)
 			clPlatformID = pids[i];
 			clPgmBase = clCreateProgramWithSource(clContext, 1, &g_szKernel, NULL, NULL);
 			errcode = clBuildProgram(clPgmBase, 1, &clDeviceID, "-cl-fast-relaxed-math", NULL, NULL);
+			// 提前创建好使用资源，只读
 			clSmooth1D = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(g_pfKernel1D), g_pfKernel1D, NULL);
 			clSmooth2DX = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(g_pfKernel2D_X), g_pfKernel2D_X, NULL);
 			clSmooth2DY = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(g_pfKernel2D_Y), g_pfKernel2D_Y, NULL);
@@ -1863,12 +1864,14 @@ bool clGetCannyEdge(unsigned char* edge,
 	int count = width * height;
 	cl_image_format imgFormat = { CL_LUMINANCE, CL_UNORM_INT8 };
 	typedef std::auto_ptr<cl_mem> mem_type;
+	// 分配临时资源，可读写，整型
 	mem_type clSrc(clCreateImage2D(clContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, &imgFormat, width, height, width, (void*)image, NULL));
 	mem_type clEdge(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL));
 	mem_type clTrans(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL));
 	mem_type clBackup(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL));
 	mem_type clTmp(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, height, width, 0, NULL, NULL));
 	imgFormat.image_channel_data_type = CL_FLOAT;
+	// 分配临时资源，可读写，浮点型
 	mem_type clSmooth(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL));
 	mem_type clSmoothY(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL));
 	mem_type clGradY(clCreateImage2D(clContext, CL_MEM_READ_WRITE, &imgFormat, width, height, 0, NULL, NULL));
@@ -1880,6 +1883,7 @@ bool clGetCannyEdge(unsigned char* edge,
 	// Gaussian Smooth
 	cl_int ret_code = CL_SUCCESS;
 	cl_sampler sampler = clCreateSampler(clContext, CL_FALSE, CL_ADDRESS_CLAMP_TO_EDGE, CL_FILTER_NEAREST, NULL);
+	// 水平方向高斯卷积
 	cl_kernel kernelGaussianSmooth = clCreateKernel(clPgmBase, "GaussianSmoothX", &ret_code);
 	clSetKernelArg(kernelGaussianSmooth, 0, sizeof(cl_mem), &clSmooth);
 	clSetKernelArg(kernelGaussianSmooth, 1, sizeof(cl_mem), &clSrc);
@@ -1892,6 +1896,7 @@ bool clGetCannyEdge(unsigned char* edge,
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianSmooth, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelGaussianSmooth);
 
+	// 垂直方向高斯卷积
 	cl_kernel kernelGaussianSmoothY = clCreateKernel(clPgmBase, "GaussianSmoothY", NULL);
 	clSetKernelArg(kernelGaussianSmoothY, 0, sizeof(cl_mem), &clSmoothY);
 	clSetKernelArg(kernelGaussianSmoothY, 1, sizeof(cl_mem), &clSmooth);
@@ -1903,26 +1908,31 @@ bool clGetCannyEdge(unsigned char* edge,
 	clReleaseKernel(kernelGaussianSmoothY);
 
 	// Gaussian Filter
+	// 计算水平方向梯度
+	cl_sampler sampler_grad = clCreateSampler(clContext, CL_FALSE, CL_ADDRESS_MIRRORED_REPEAT, CL_FILTER_NEAREST, NULL);
 	cl_kernel kernelGaussianFilter = clCreateKernel(clPgmBase, "Gaussian2DReplicate", NULL);
 	clSetKernelArg(kernelGaussianFilter, 0, sizeof(cl_mem), &clSmooth);
 	clSetKernelArg(kernelGaussianFilter, 1, sizeof(cl_mem), &clSmoothY);
 	clSetKernelArg(kernelGaussianFilter, 2, sizeof(cl_mem), &clSmooth2DX);
 	clSetKernelArg(kernelGaussianFilter, 3, sizeof(int), &width);
 	clSetKernelArg(kernelGaussianFilter, 4, sizeof(int), &height);
-	clSetKernelArg(kernelGaussianFilter, 5, sizeof(cl_sampler), &sampler);
+	clSetKernelArg(kernelGaussianFilter, 5, sizeof(cl_sampler), &sampler_grad);
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianFilter, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	cl_mem clGradX = clSmooth;
 
+	// 计算垂直方向梯度
 	clSetKernelArg(kernelGaussianFilter, 0, sizeof(cl_mem), &clGradY);
 	clSetKernelArg(kernelGaussianFilter, 1, sizeof(cl_mem), &clSmoothY);
 	clSetKernelArg(kernelGaussianFilter, 2, sizeof(cl_mem), &clSmooth2DY);
 	clSetKernelArg(kernelGaussianFilter, 3, sizeof(int), &width);
 	clSetKernelArg(kernelGaussianFilter, 4, sizeof(int), &height);
-	clSetKernelArg(kernelGaussianFilter, 5, sizeof(cl_sampler), &sampler);
+	clSetKernelArg(kernelGaussianFilter, 5, sizeof(cl_sampler), &sampler_grad);
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGaussianFilter, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelGaussianFilter);
+	clReleaseSampler(sampler_grad);
 
 	cl_mem clGrad = clSmoothY;
+	// 计算梯度幅度
 	cl_kernel kernelGradMagnitude = clCreateKernel(clPgmBase, "GradMagnitude", NULL);
 	clSetKernelArg(kernelGradMagnitude, 0, sizeof(cl_mem), &clGrad);
 	clSetKernelArg(kernelGradMagnitude, 1, sizeof(cl_mem), &clGradX);
@@ -1936,6 +1946,7 @@ bool clGetCannyEdge(unsigned char* edge,
 	size_t image_row_pitch = 0;
 	size_t origin[] = { 0, 0, 0 }, region[] = { width, height, 1 };
 	cl_mem maxGrad = clCreateBuffer(clContext, CL_MEM_READ_WRITE, 64*sizeof(float), NULL, NULL);
+	// 求最大梯度幅度
 	cl_kernel kernelGradMax = clCreateKernel(clPgmBase, "GradMax", NULL);
 	clSetKernelArg(kernelGradMax, 0, sizeof(cl_mem), &maxGrad);
 	clSetKernelArg(kernelGradMax, 1, sizeof(cl_mem), &clGrad);
@@ -1945,6 +1956,7 @@ bool clGetCannyEdge(unsigned char* edge,
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGradMax, 2, NULL, local_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelGradMax);
 
+	// 归一化梯度
 	cl_kernel kernelGradInv = clCreateKernel(clPgmBase, "GradNorm", NULL);
 	clSetKernelArg(kernelGradInv, 0, sizeof(cl_mem), &clGradNorm);
 	clSetKernelArg(kernelGradInv, 1, sizeof(cl_mem), &clGrad);
@@ -1955,6 +1967,7 @@ bool clGetCannyEdge(unsigned char* edge,
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelGradInv, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelGradInv);
 
+	// 梯度统计
 	cl_mem hist = maxGrad;
 	cl_kernel kernelHist = clCreateKernel(clPgmBase, "GradHist", NULL);
 	ret_code = clEnqueueFillBuffer(clCmdQueue, hist, origin, sizeof(size_t), 0, 64*sizeof(int), 0, NULL, NULL);
@@ -1967,6 +1980,7 @@ bool clGetCannyEdge(unsigned char* edge,
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelHist, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelHist);
 
+	// 估计高低阈值
 	cl_kernel kernalTH = clCreateKernel(clPgmBase, "CalcThreshold", NULL);
 	clSetKernelArg(kernalTH, 0, sizeof(cl_mem), &hist);
 	float fHighR = (float)ratioHigh;
@@ -1979,6 +1993,7 @@ bool clGetCannyEdge(unsigned char* edge,
 	clReleaseKernel(kernalTH);
 
 	// Non-maximum suppress
+	// 非最大值抑制
 	cl_kernel kernelNonMaxSuppress = clCreateKernel(clPgmBase, "NonMaxSuppress", NULL);
 	clSetKernelArg(kernelNonMaxSuppress, 0, sizeof(cl_mem), &clEdge);
 	clSetKernelArg(kernelNonMaxSuppress, 1, sizeof(cl_mem), &clGradX);
@@ -1991,6 +2006,7 @@ bool clGetCannyEdge(unsigned char* edge,
 	clReleaseKernel(kernelNonMaxSuppress);
 
 	// Hysteresis
+	// 滞后预处理，找到所有可能的边并标记
 	cl_kernel kernelHys = clCreateKernel(clPgmBase, "Hysteresis", NULL);
 	clSetKernelArg(kernelHys, 0, sizeof(cl_mem), &clSrc);
 	clSetKernelArg(kernelHys, 1, sizeof(cl_mem), &clEdge);
@@ -2002,6 +2018,7 @@ bool clGetCannyEdge(unsigned char* edge,
 	ret_code = clEnqueueNDRangeKernel(clCmdQueue, kernelHys, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 	clReleaseKernel(kernelHys);
 
+	// 下行并递归处理可能的边
 	ret_code = clEnqueueReadImage(clCmdQueue, clSrc, CL_TRUE, origin, region, 0, 0, edge, 0, NULL, NULL);
 	std::vector<unsigned char*> vPtr;
 	vPtr.reserve(count);
@@ -2047,7 +2064,7 @@ bool clGetCannyEdge(unsigned char* edge,
 		}
 	}
 
-	// Final
+	// 上行，同时标记非边缘，并转置
 	clEnqueueWriteImage(clCmdQueue, clSrc, CL_TRUE, origin, region, 0, 0, edge, 0, NULL, NULL);
 	cl_kernel kernelTransSet = clCreateKernel(clPgmBase, "TransposeSet", NULL);
 	clSetKernelArg(kernelTransSet, 0, sizeof(cl_mem), &clTrans);
@@ -2061,13 +2078,14 @@ bool clGetCannyEdge(unsigned char* edge,
 
 	bool done = false;
 	std::swap(region[0], region[1]);
+	// 细化表处理
 	cl_kernel kernelApplyLut = clCreateKernel(clPgmBase, "ApplyLut", NULL);
 	int iterates = 1;
 	bool equalC = true;
 	int iterNum = 1;
 	while(!done)
 	{
-#ifdef THINNER_MORE
+#ifdef THINNER_MORE	// 目前仅需细化处理一遍，因此不用备份，减少一次拷贝
 		errcode = clEnqueueCopyImage(clCmdQueue, clTrans, clBackup, origin, origin, region, 0, NULL, NULL);
 #endif
 		clSetKernelArg(kernelApplyLut, 0, sizeof(cl_mem), &clTmp);
@@ -2086,7 +2104,7 @@ bool clGetCannyEdge(unsigned char* edge,
 		clSetKernelArg(kernelApplyLut, 5, sizeof(int), &width);
 		errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelApplyLut, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
 
-#ifdef THINNER_MORE
+#ifdef THINNER_MORE	// 目前仅需细化处理一遍，因此不用下行
 		size_t row_pitch0 = 0;
 		void* ptr0 = clEnqueueMapImage(clCmdQueue, clBackup, CL_TRUE, CL_MAP_READ, origin, region, &row_pitch0, NULL, 0, NULL, NULL, NULL);
 		size_t row_pitch1 = 0;
@@ -2112,6 +2130,7 @@ bool clGetCannyEdge(unsigned char* edge,
 		iterates++;
 	}
 
+	// 转置
 	cl_kernel kernelTrans = clCreateKernel(clPgmBase, "Transpose", NULL);
 	clSetKernelArg(kernelTrans, 0, sizeof(cl_mem), &clSrc);
 	clSetKernelArg(kernelTrans, 1, sizeof(cl_mem), &clTrans);
@@ -2125,6 +2144,7 @@ bool clGetCannyEdge(unsigned char* edge,
 	clReleaseSampler(sampler);
 
 	std::swap(region[0], region[1]);
+	// 下行并返回结果
 	errcode = clEnqueueReadImage(clCmdQueue, clSrc, CL_TRUE, origin, region, 0, 0, edge, 0, NULL, NULL);
 
 	// Done
