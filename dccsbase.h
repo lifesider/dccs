@@ -75,6 +75,8 @@ void nsp_calc_norm_magnitude_d(OUT double* magnitude,	// 归一化梯度
 							   IN double const* diffY,	// Y 方向导数
 							   IN int count);
 
+void SobelGrad(int* pnGrad, unsigned char const* pbyGray, unsigned char const* pbyMask, int width, int height, int nDir);
+
 // 0-Intel GPU，1-NVIDIA CUDA，2-AMD
 bool init_platform(int platformID);
 

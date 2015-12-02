@@ -1571,6 +1571,128 @@ loop_end:
 		dbmemgain_sse2(magnitude, magnitude, 1.0/max_mag, count);
 }
 
+void SobelGrad(int* pnGrad, unsigned char const* pbyGray, unsigned char const* pbyMask, int width, int height, int nDir)
+{
+	if(nDir == 1)	// horizonal
+	{
+		// -1, -2, -1
+		//  0,  0,  0
+		//  1,  2,  1
+		memset(pnGrad, 0, width*sizeof(int));
+		pnGrad += width;
+		pbyMask += width;
+		pbyGray += width;
+		__m128i zero = _mm_setzero_si128();
+		for(int i=1; i<height-1; ++i)
+		{
+			*pnGrad++ = 0;
+			pbyMask++;
+			int len = width-2;
+			while((len -= 8) >= 0)
+			{
+				__m128i mask = _mm_loadl_epi64((__m128i *)pbyMask);
+				if(!(_mm_movemask_epi8(mask) & 15))
+				{
+					_mm_storeu_si128((__m128i *)pnGrad, zero);
+					_mm_storeu_si128((__m128i *)(pnGrad+4), zero);
+				}
+				else
+				{
+					__m128i xmm0 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i *)(pbyGray-width)), zero);
+					__m128i xmm1 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i *)(pbyGray-width+1)), zero);
+					__m128i xmm2 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i *)(pbyGray-width+2)), zero);
+					__m128i xmm3 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i *)(pbyGray+width)), zero);
+					__m128i xmm4 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i *)(pbyGray+width+1)), zero);
+					__m128i xmm5 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i *)(pbyGray+width+2)), zero);
+					__m128i xmm6 = _mm_sub_epi16(xmm4, xmm1);
+					xmm0 = _mm_add_epi16(_mm_sub_epi16(xmm3, xmm0), _mm_sub_epi16(xmm5, xmm2));
+					xmm0 = _mm_add_epi16(_mm_add_epi16(xmm6, xmm6), xmm0);
+					xmm0 = _mm_or_si128(_mm_max_epi16(xmm0, zero), _mm_sub_epi16(zero, _mm_min_epi16(xmm0, zero)));
+					xmm0 = _mm_andnot_si128(_mm_cmpeq_epi16(_mm_unpacklo_epi8(mask, zero), zero), xmm0);
+					_mm_storeu_si128((__m128i *)pnGrad, _mm_unpacklo_epi16(xmm0, zero));
+					_mm_storeu_si128((__m128i *)(pnGrad+4), _mm_unpackhi_epi16(xmm0, zero));
+				}
+				pnGrad += 8;
+				pbyMask += 8;
+				pbyGray += 8;
+			}
+			if((len += 8) > 0)
+			{
+				for(int i=0; i<len; ++i, pbyGray++)
+				{
+					if(*pbyMask++ != 0)
+					{
+						*pnGrad++ = std::abs(pbyGray[width] + pbyGray[width+1] + pbyGray[width+2] - pbyGray[-width] - pbyGray[-width+1] - pbyGray[-width+2]);
+					}
+				}
+			}
+			*pnGrad++ = 0;
+			pbyMask++;
+			pbyGray += 2;
+		}
+		memset(pnGrad, 0, width*sizeof(int));
+	}
+	else
+	{
+		// -1, 0, 1
+		// -2, 0, 2
+		// -1, 0, 1
+		memset(pnGrad, 0, width*sizeof(int));
+		pnGrad += width;
+		pbyMask += width;
+		pbyGray += width;
+		__m128i zero = _mm_setzero_si128();
+		for(int i=1; i<height-1; ++i)
+		{
+			*pnGrad++ = 0;
+			pbyMask++;
+			int len = width-2;
+			while((len -= 8) >= 0)
+			{
+				__m128i mask = _mm_loadl_epi64((__m128i *)pbyMask);
+				if(!(_mm_movemask_epi8(mask) & 15))
+				{
+					_mm_storeu_si128((__m128i *)pnGrad, zero);
+					_mm_storeu_si128((__m128i *)(pnGrad+4), zero);
+				}
+				else
+				{
+					__m128i xmm0 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i *)(pbyGray-width)), zero);
+					__m128i xmm1 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i *)(pbyGray-width+2)), zero);
+					__m128i xmm2 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i *)(pbyGray)), zero);
+					__m128i xmm3 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i *)(pbyGray+2)), zero);
+					__m128i xmm4 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i *)(pbyGray+width)), zero);
+					__m128i xmm5 = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i *)(pbyGray+width+2)), zero);
+					__m128i xmm6 = _mm_add_epi16(_mm_sub_epi16(xmm1, xmm0), _mm_sub_epi16(xmm5, xmm4));
+					__m128i xmm7 = _mm_sub_epi16(xmm3, xmm2);
+					xmm0 = _mm_add_epi16(_mm_add_epi16(xmm7, xmm7), xmm6);
+					xmm0 = _mm_or_si128(_mm_max_epi16(xmm0, zero), _mm_sub_epi16(zero, _mm_min_epi16(xmm0, zero)));
+					xmm0 = _mm_andnot_si128(_mm_cmpeq_epi16(_mm_unpacklo_epi8(mask, zero), zero), xmm0);
+					_mm_storeu_si128((__m128i *)pnGrad, _mm_unpacklo_epi16(xmm0, zero));
+					_mm_storeu_si128((__m128i *)(pnGrad+4), _mm_unpackhi_epi16(xmm0, zero));
+				}
+				pnGrad += 8;
+				pbyMask += 8;
+				pbyGray += 8;
+			}
+			if((len += 8) > 0)
+			{
+				for(int i=0; i<len; ++i, pbyGray++)
+				{
+					if(*pbyMask++ != 0)
+					{
+						*pnGrad++ = std::abs(pbyGray[-width+2] + pbyGray[2] + pbyGray[width+2] - pbyGray[-width] - pbyGray[0] - pbyGray[width]);
+					}
+				}
+			}
+			*pnGrad++ = 0;
+			pbyMask++;
+			pbyGray += 2;
+		}
+		memset(pnGrad, 0, width*sizeof(int));
+	}
+}
+
 void float2double_sse2(double* des, float const* src, size_t count)
 {
 	__asm

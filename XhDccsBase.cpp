@@ -888,6 +888,10 @@ void XhDccsBase::SobelPowGrad(const BYTE* pbyGray, const SIZE& szGray, int nBpp,
 void XhDccsBase::SobelGrad(const BYTE* pbyGray, const SIZE& szGray, int nBpp, 
                            const BYTE* pbyMask, int* pnGrad, int nDir)
 {
+#ifdef SSE_OPTIMIZE
+	::SobelGrad(pnGrad, pbyGray, pbyMask, szGray.cx, szGray.cy, nDir);
+	return;
+#endif
     assert(pbyGray);
     assert(pbyMask);
     assert(pnGrad);
