@@ -1622,7 +1622,7 @@ void SobelGrad(int* pnGrad, unsigned char const* pbyGray, unsigned char const* p
 				{
 					if(*pbyMask++ != 0)
 					{
-						*pnGrad++ = std::abs(pbyGray[width] + pbyGray[width+1] + pbyGray[width+2] - pbyGray[-width] - pbyGray[-width+1] - pbyGray[-width+2]);
+						*pnGrad++ = std::abs(pbyGray[width] + pbyGray[width+1]*2 + pbyGray[width+2] - pbyGray[-width] - pbyGray[-width+1]*2 - pbyGray[-width+2]);
 					}
 				}
 			}
@@ -1681,7 +1681,7 @@ void SobelGrad(int* pnGrad, unsigned char const* pbyGray, unsigned char const* p
 				{
 					if(*pbyMask++ != 0)
 					{
-						*pnGrad++ = std::abs(pbyGray[-width+2] + pbyGray[2] + pbyGray[width+2] - pbyGray[-width] - pbyGray[0] - pbyGray[width]);
+						*pnGrad++ = std::abs(pbyGray[-width+2] + pbyGray[2]*2 + pbyGray[width+2] - pbyGray[-width] - pbyGray[0]*2 - pbyGray[width]);
 					}
 				}
 			}
