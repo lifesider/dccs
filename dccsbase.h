@@ -12,11 +12,35 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <intrin.h>
+#include <memory>
+#include <xutility>
+#include <CL/opencl.h>
+
+#pragma comment(lib, "OpenCL")
+
+// OpenCL resources
+extern cl_platform_id		clPlatformID;
+extern cl_device_id			clDeviceID;
+extern cl_context			clContext;
+extern cl_command_queue		clCmdQueue;
+extern cl_program			clPgmGMM;
 
 #ifndef IN
 #define IN
 #define OUT
 #endif
+
+template<>
+class std::auto_ptr<cl_mem>
+{
+public:
+	explicit auto_ptr(cl_mem _Mem = NULL) : _Mymem(_Mem) {}
+	operator cl_mem() const { return _Mymem; }
+	~auto_ptr() { if(_Mymem != NULL) clReleaseMemObject(_Mymem); _Mymem = NULL; }
+
+private:
+	cl_mem	_Mymem;
+};
 
 #if defined(_WIN32) || defined(_WINDOWS)
 #define decl_align(type, n, var)	__declspec(align(n)) ##type var

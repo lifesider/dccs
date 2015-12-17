@@ -1,7 +1,10 @@
 #pragma once
+#include "dccsbase.h"
 
 #define MEMO_FREE_AND_NULL_N(p)     if (p){delete [] p; p = NULL;}
 #define MEMO_FREE_AND_NULL(p)       if (p){delete p; p = NULL;}
+
+#define OPENCL_FOR_GRAD_GMM
 
 class xhGradsGMM
 {
@@ -90,4 +93,12 @@ private:
 	int*			m_pnGrad;
 	int*			m_pnBackGrad;
 	BYTE*			m_pbDist;
+
+#ifdef OPENCL_FOR_GRAD_GMM
+	cl_mem			m_clPixelGmm;
+	cl_mem			m_clGmmBw;
+	cl_mem			m_clGrad;
+	cl_mem			m_clBackGrad;
+	cl_mem			m_clDist;
+#endif
 };

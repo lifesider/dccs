@@ -12,6 +12,7 @@ using namespace std;
 
 int main()
 {
+	init_platform(0);
 	string path(MAX_PATH, '\0');
 	path.resize(GetModuleFileNameA(NULL, &path[0], MAX_PATH)+1);
 	path.erase(path.rfind('\\')+1);
@@ -31,7 +32,9 @@ int main()
 		string numstr = imgsec.substr(imgsec.rfind('\\')+1, imgsec.rfind('.')-imgsec.rfind('\\')-1);
 		istringstream istr(numstr);
 		istr >> framenum;
-		gmm.SetVideoFrame(img.data, NULL, 30*framenum);
+		double t = getTickCount();
+		gmm.SetVideoFrame(img.data, NULL, framenum);
+		printf("SetVideoFrame: %.2fms\n", (getTickCount()-t)*1000/getTickFrequency());
 		BYTE* bw;
 		gmm.GetGmmBw(&bw);
 		imshow("", Mat(img.size(), CV_8UC1, bw));
@@ -47,5 +50,6 @@ int main()
 	printf("%.2fms\n", t.gettimems());
 // 	imshow("", img);
 // 	waitKey(0);
+	release_platform();
 	return 0;
 }

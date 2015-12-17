@@ -1,6 +1,5 @@
 #include "StdAfx.h"
 #include "xhGradsGMM.h"
-#include "dccsbase.h"
 
 #define MinVar			 1.0f
 #define MaxVar			 9.0f
@@ -20,6 +19,13 @@
 
 xhGradsGMM::xhGradsGMM(void)
 {
+#ifdef OPENCL_FOR_GRAD_GMM
+	m_clPixelGmm	= NULL;
+	m_clGmmBw		= NULL;
+	m_clBackGrad	= NULL;
+	m_clGrad		= NULL;
+	m_clDist		= NULL;
+#endif
 	m_pstPixelGmm	= NULL;
 	m_pbGmmBw		= NULL;
 	m_pnGrad		= NULL;
@@ -38,6 +44,20 @@ xhGradsGMM::~xhGradsGMM(void)
 	MEMO_FREE_AND_NULL_N(m_pnGrad);
 	MEMO_FREE_AND_NULL_N(m_pnBackGrad);
 	MEMO_FREE_AND_NULL_N(m_pbDist);
+
+#ifdef OPENCL_FOR_GRAD_GMM
+	if(m_clPixelGmm != NULL)
+		clReleaseMemObject(m_clPixelGmm), m_clPixelGmm = NULL;
+	if(m_clGmmBw != NULL)
+		clReleaseMemObject(m_clGmmBw), m_clGmmBw = NULL;
+	if(m_clGrad != NULL)
+		clReleaseMemObject(m_clGrad), m_clGrad = NULL;
+	if(m_clBackGrad != NULL)
+		clReleaseMemObject(m_clBackGrad), m_clBackGrad = NULL;
+	if(m_clDist != NULL)
+		clReleaseMemObject(m_clDist), m_clDist = NULL;
+#endif
+
 }
 
 int xhGradsGMM::ReSet()
@@ -82,11 +102,59 @@ int xhGradsGMM::SetVideoFrameInfo(int nWidth, int nHeight)
 	m_pbGmmBw       = new BYTE[m_nSize + 31];
 	ZeroMemory(m_pbGmmBw, sizeof(*m_pbGmmBw) * m_nSize);
 
+#ifdef OPENCL_FOR_GRAD_GMM
+	if(m_clPixelGmm != NULL)
+		clReleaseMemObject(m_clPixelGmm), m_clPixelGmm = NULL;
+	if(m_clGmmBw != NULL)
+		clReleaseMemObject(m_clGmmBw), m_clGmmBw = NULL;
+	if(m_clGrad != NULL)
+		clReleaseMemObject(m_clGrad), m_clGrad = NULL;
+	if(m_clBackGrad != NULL)
+		clReleaseMemObject(m_clBackGrad), m_clBackGrad = NULL;
+	if(m_clDist != NULL)
+		clReleaseMemObject(m_clDist), m_clDist = NULL;
+
+	m_clPixelGmm = clCreateBuffer(clContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, m_nSize*sizeof(ST_PixelGMM), m_pstPixelGmm, NULL);
+	m_clGrad = clCreateBuffer(clContext, CL_MEM_READ_WRITE, m_nSize*2*sizeof(int), NULL, NULL);
+	m_clBackGrad = clCreateBuffer(clContext, CL_MEM_READ_WRITE, m_nSize*2*sizeof(int), NULL, NULL);
+	m_clDist = clCreateBuffer(clContext, CL_MEM_READ_WRITE, m_nSize, NULL, NULL);
+	m_clGmmBw = clCreateBuffer(clContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, m_nSize, m_pbGmmBw, NULL);
+#endif
+
 	return 1;
 }
 
 void xhGradsGMM::Sobel(const BYTE* pbImage, const BYTE* pbMask)
 {
+#ifdef OPENCL_FOR_GRAD_GMM
+	typedef std::auto_ptr<cl_mem> mem_type;
+	mem_type clSrc(clCreateBuffer(clContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, m_nSize, (void*)pbImage, NULL));
+	size_t local_work_size[] = {16, 16};
+	size_t global_work_size[] = {(m_nWidth+15) & ~15, (m_nHeight+15) & ~15};
+	cl_int errcode = CL_SUCCESS;
+	if(pbMask == NULL)
+	{
+		cl_kernel kernalSobel = clCreateKernel(clPgmGMM, "Sobel", NULL);
+		clSetKernelArg(kernalSobel, 0, sizeof(cl_mem), &m_clGrad);
+		clSetKernelArg(kernalSobel, 1, sizeof(cl_mem), &clSrc);
+		clSetKernelArg(kernalSobel, 2, sizeof(int), &m_nWidth);
+		clSetKernelArg(kernalSobel, 3, sizeof(int), &m_nHeight);
+		errcode = clEnqueueNDRangeKernel(clCmdQueue, kernalSobel, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+		clReleaseKernel(kernalSobel);
+	}
+	else
+	{
+		mem_type clMask(clCreateBuffer(clContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, m_nSize, (void*)pbMask, NULL));
+		cl_kernel kernalSobel = clCreateKernel(clPgmGMM, "SobelMask", NULL);
+		clSetKernelArg(kernalSobel, 0, sizeof(cl_mem), &m_clGrad);
+		clSetKernelArg(kernalSobel, 1, sizeof(cl_mem), &clSrc);
+		clSetKernelArg(kernalSobel, 2, sizeof(cl_mem), &clMask);
+		clSetKernelArg(kernalSobel, 3, sizeof(int), &m_nWidth);
+		clSetKernelArg(kernalSobel, 4, sizeof(int), &m_nHeight);
+		errcode = clEnqueueNDRangeKernel(clCmdQueue, kernalSobel, 2, NULL, global_work_size, local_work_size, 0, NULL, NULL);
+		clReleaseKernel(kernalSobel);
+	}
+#else
 	ZeroMemory(m_pnGrad, m_nSize * 2 * sizeof(*m_pnGrad));
 
 	int nOffSetLU = -m_nWidth - 1;
@@ -148,6 +216,7 @@ void xhGradsGMM::Sobel(const BYTE* pbImage, const BYTE* pbMask)
 			pnGradTmp += 4;
 		}
 	}
+#endif
 }
 
 int xhGradsGMM::SetVideoFrame(const BYTE* pbImage, const BYTE* pbMask, double dDriftTime)
@@ -174,6 +243,22 @@ int xhGradsGMM::SetVideoFrame(const BYTE* pbImage, const BYTE* pbMask, double dD
 			float fFastWeightLearnRate = float(DefaultFrameRate * (dDriftTime - m_dForDriftTime) / FastWLearnRate);
 			m_fAlphaM = float(DefaultFrameRate * (dDriftTime - m_dForDriftTime) / MeanLearnRate);
 
+#ifdef OPENCL_FOR_GRAD_GMM
+			cl_kernel kernelMatchForJudge = clCreateKernel(clPgmGMM, "MatchForeJudge", NULL);
+			clSetKernelArg(kernelMatchForJudge, 0, sizeof(cl_mem), &m_clGrad);
+			clSetKernelArg(kernelMatchForJudge, 1, sizeof(cl_mem), &m_clPixelGmm);
+			clSetKernelArg(kernelMatchForJudge, 2, sizeof(cl_mem), &m_clGmmBw);
+			clSetKernelArg(kernelMatchForJudge, 3, sizeof(int), &m_nSize);
+			clSetKernelArg(kernelMatchForJudge, 4, sizeof(float), &m_fVarRatio1);
+			clSetKernelArg(kernelMatchForJudge, 5, sizeof(float), &m_fVarRatio2);
+			clSetKernelArg(kernelMatchForJudge, 6, sizeof(float), &m_fAlphaM);
+			clSetKernelArg(kernelMatchForJudge, 7, sizeof(float), &fSlowWeightLearnRate);
+			clSetKernelArg(kernelMatchForJudge, 8, sizeof(float), &fFastWeightLearnRate);
+			size_t local_work_size = 256;
+			size_t global_work_size = (m_nSize + 255) & ~255;
+			cl_int errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelMatchForJudge, 1, NULL, &global_work_size, &local_work_size, 0, NULL, NULL);
+			clReleaseKernel(kernelMatchForJudge);
+#else
 			int*         pnTemp1     = m_pnGrad;
 			//int*       pnTemp2     = m_pnBackGrad;
 			//BYTE*		 pbTemp3	 = m_pbDist;
@@ -222,11 +307,23 @@ int xhGradsGMM::SetVideoFrame(const BYTE* pbImage, const BYTE* pbMask, double dD
 				pbTemp5++;
 				pstPixelGmm++;
 			}
-
+#endif
 			m_dForDriftTime = dDriftTime;
 		}
 		else
 		{
+#ifdef OPENCL_FOR_GRAD_GMM
+			cl_kernel kernelMatchForJudgeSkip = clCreateKernel(clPgmGMM, "MatchForeJudge_Skip", NULL);
+			clSetKernelArg(kernelMatchForJudgeSkip, 0, sizeof(cl_mem), &m_clGrad);
+			clSetKernelArg(kernelMatchForJudgeSkip, 1, sizeof(cl_mem), &m_clPixelGmm);
+			clSetKernelArg(kernelMatchForJudgeSkip, 2, sizeof(cl_mem), &m_clGmmBw);
+			clSetKernelArg(kernelMatchForJudgeSkip, 3, sizeof(int), &m_nSize);
+			clSetKernelArg(kernelMatchForJudgeSkip, 4, sizeof(float), &m_fVarRatio2);
+			size_t local_work_size = 256;
+			size_t global_work_size = (m_nSize + 255) & ~255;
+			cl_int errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelMatchForJudgeSkip, 1, NULL, &global_work_size, &local_work_size, 0, NULL, NULL);
+			clReleaseKernel(kernelMatchForJudgeSkip);
+#else
 			int*         pnTemp1     = m_pnGrad;
 			//int*       pnTemp2     = m_pnBackGrad;
 			//BYTE*		 pbTemp3	 = m_pbDist;
@@ -244,6 +341,7 @@ int xhGradsGMM::SetVideoFrame(const BYTE* pbImage, const BYTE* pbMask, double dD
 				pbTemp5++;
 				pstPixelGmm++;
 			}
+#endif
 		}
 	}
 
@@ -252,6 +350,17 @@ int xhGradsGMM::SetVideoFrame(const BYTE* pbImage, const BYTE* pbMask, double dD
 
 void xhGradsGMM::InitialPixelGmm()
 {
+#ifdef OPENCL_FOR_GRAD_GMM
+	cl_kernel kernelInitPixelGmm = clCreateKernel(clPgmGMM, "InitPixelGmm", NULL);
+	clSetKernelArg(kernelInitPixelGmm, 0, sizeof(cl_mem), &m_clPixelGmm);
+	clSetKernelArg(kernelInitPixelGmm, 1, sizeof(cl_mem), &m_clGrad);
+	clSetKernelArg(kernelInitPixelGmm, 2, sizeof(int), &m_nSize);
+	size_t local_work_size = 256;
+	size_t global_work_size = (m_nSize + 255) & ~255;
+	cl_int errcode = clEnqueueNDRangeKernel(clCmdQueue, kernelInitPixelGmm, 1, NULL, &global_work_size, &local_work_size, 0, NULL, NULL);
+	clReleaseKernel(kernelInitPixelGmm);
+	return;
+#endif
 	int*         pnTemp1     = m_pnGrad;
 	ST_PixelGMM* pstPixelGmm = m_pstPixelGmm;
 	for (int i = 0; i < m_nSize; i++)
@@ -524,18 +633,27 @@ void xhGradsGMM::SortedByKey(ST_PixelPerGMM* pGMM, int nMatchIndex, float fMatch
 
 int xhGradsGMM::GetGmmBw(BYTE** pbBw)
 {
+#ifdef OPENCL_FOR_GRAD_GMM
+	clEnqueueReadBuffer(clCmdQueue, m_clGmmBw, CL_TRUE, 0, m_nSize, m_pbGmmBw, 0, NULL, NULL);
+#endif
 	*pbBw = m_pbGmmBw;
 	return 1;
 }
 
 int xhGradsGMM::GetDist(BYTE** pbDist)
 {
+#ifdef OPENCL_FOR_GRAD_GMM
+	clEnqueueReadBuffer(clCmdQueue, m_clDist, CL_TRUE, 0, m_nSize, m_pbDist, 0, NULL, NULL);
+#endif
 	*pbDist = m_pbDist;
 	return 1;
 }
 
 int xhGradsGMM::GetBackImg(int** pnBackImg)
 {
+#ifdef OPENCL_FOR_GRAD_GMM
+	clEnqueueReadBuffer(clCmdQueue, m_clBackGrad, CL_TRUE, 0, m_nSize*sizeof(int), m_pnBackGrad, 0, NULL, NULL);
+#endif
 	*pnBackImg = m_pnBackGrad;
 	return 1;
 }

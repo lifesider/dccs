@@ -10,12 +10,8 @@
 #include <algorithm>
 #include <numeric>
 #include <vector>
-#include <memory>
 #include <xutility>
 #include <assert.h>
-#include <CL/opencl.h>
-
-#pragma comment(lib, "OpenCL")
 
 #pragma warning(disable: 4996)
 
@@ -37,6 +33,7 @@ cl_mem				clSmooth2DY = NULL;
 cl_mem				clFactorRegion = NULL;
 cl_mem				clLutArray1 = NULL;
 cl_mem				clLutArray2 = NULL;
+cl_program			clPgmGMM = NULL;
 
 #define KERNEL(...) #__VA_ARGS__
 
@@ -337,6 +334,286 @@ __kernel void ApplyLut(write_only image2d_t des, read_only image2d_t src, global
 			}
 		}
 		write_imagef(des, coord, (float4)(buffer[result] == 0 ? 0.0f : 1.0f));
+	}
+}
+
+);
+
+// GMM
+char const* g_szKernelGMM = KERNEL(
+
+struct ST_PixelPerGMM
+{
+	float		fWeight;
+	float       fGradX;
+	float       fGradY;
+};
+
+struct ST_PixelGMM		
+{
+	float			 fVar;
+	int			     nGMMUsedNum;				// 每个像素点的高斯模型个数
+	struct ST_PixelPerGMM   pGMM[GmmMaxNum];			// 每个像素点可能会有几个高斯模型   
+};
+
+__kernel void Sobel(__global int* grad, __global uchar* img, int width, int height)
+{
+	int x = get_global_id(0);
+	int y = get_global_id(1);
+	if(x < width && y < height)
+	{
+		__global int* G = grad + y * width * 2 + x * 2;
+		__global uchar* I = img + y * width + x;
+		if(x > 0 && x < width-1 && y > 0 && y < height-1)
+		{
+			G[0] = ((I[width-1] - I[-width-1]) + 2*(I[width] - I[-width]) + (I[width+1] - I[-width+1])) >> 3;
+			G[1] = ((I[-width-1] - I[-width+1]) + 2*(I[-1] - I[1]) + (I[width-1] - I[width+1])) >> 3;
+		}
+		else
+		{
+			G[0] = G[1] = 0;
+		}
+	}
+}
+
+__kernel void SobelMask(__global int* grad, __global uchar* img, __global uchar* mask, int width, int height)
+{
+	int x = get_global_id(0);
+	int y = get_global_id(1);
+	if(x < width && y < height)
+	{
+		__global int* G = grad + y * width * 2 + x * 2;
+		__global uchar* I = img + y * width + x;
+		__global uchar* M = mask + y * width + x;
+		if(M[0] != 0 && x > 0 && x < width-1 && y > 0 && y < height-1)
+		{
+			G[0] = ((I[width-1] - I[-width-1]) + 2*(I[width] - I[-width]) + (I[width+1] - I[-width+1])) >> 3;
+			G[1] = ((I[-width-1] - I[-width+1]) + 2*(I[-1] - I[1]) + (I[width-1] - I[width+1])) >> 3;
+		}
+		else
+		{
+			G[0] = G[1] = 0;
+		}
+	}
+}
+
+__kernel void InitPixelGmm(__global struct ST_PixelGMM* gmm, __global int* grad, int count)
+{
+	int x = get_global_id(0);
+	if(x < count)
+	{
+		__global struct ST_PixelGMM* P = gmm + x;
+		__global int* G = grad + x * 2;
+		P->nGMMUsedNum = 1;
+		P->fVar = InitialVar;
+		P->pGMM[0].fWeight = 1.0f/SlowWLearnRate;
+		P->pGMM[0].fGradX = (float)G[0];
+		P->pGMM[0].fGradY = (float)G[1];
+	}
+}
+
+__kernel void MatchForeJudge(__global int* grad, __global struct ST_PixelGMM* gmm, __global uchar* bw, int count,
+							 float varRatio1, float varRatio2, float fAlphaM, float slowLearnRate, float fastLearnRate)
+{
+	int x = get_global_id(0);
+	if(x < count)
+	{
+		__global struct ST_PixelGMM* P = gmm + x;
+		__global int* G = grad + x * 2;
+		__global uchar* B = bw + x;
+		float fTotalWeight = 0.0f;
+		for(int i=0; i<P->nGMMUsedNum; ++i)
+			fTotalWeight += P->pGMM[i].fWeight;
+		if(fTotalWeight > 1.0f)
+		{
+			for(int i=0; i<P->nGMMUsedNum; ++i)
+				P->pGMM[i].fWeight /= fTotalWeight;
+			fTotalWeight = 1.0f;
+		}
+		float fThres1 = varRatio1 * P->fVar;
+		float fThres2 = varRatio2 * P->fVar;
+		int nMatchFlag1 = -1;
+		int nMatchFlag2 = -1;
+		float fAlphaW = slowLearnRate;
+		float fAlpha1 = 1.0f - fAlphaW;
+		float fCT = 0.05f * fAlphaW;
+		for(int i=0; i<P->nGMMUsedNum; ++i)
+		{
+			float fDiffX = P->pGMM[i].fGradX - (float)G[0];
+			float fDiffY = P->pGMM[i].fGradY - (float)G[1];
+			float fDist = fabs(fDiffX) + fabs(fDiffY);
+			fDist *= fDist;
+			if(nMatchFlag2 < 0 && fDist < fThres2)
+				nMatchFlag2 = i;
+			if(fDist < fThres1)
+			{
+				nMatchFlag1 = i;
+				P->pGMM[i].fWeight = fAlpha1 * P->pGMM[i].fWeight - fCT + fAlphaW;
+				P->pGMM[i].fGradX -= fAlphaM * fDiffX;
+				P->pGMM[i].fGradY -= fAlphaM * fDiffY;
+				P->fVar -= 0.01f * (P->fVar - fDist);
+				P->fVar = clamp(P->fVar, MinVar, MaxVar);
+				break;
+			}
+		}
+		if(nMatchFlag2 == 0)
+			*B = BACKGROUND;
+		else if(nMatchFlag2 == -1)
+			*B = FOREGROUND;
+		else
+		{
+			float fSumWeight = 0.0f;
+			for(int i=0; i<nMatchFlag2; ++i)
+				fSumWeight += P->pGMM[i].fWeight;
+			if(fSumWeight < Thres * fTotalWeight)
+				*B = BACKGROUND;
+			else
+				*B = FOREGROUND;
+		}
+
+		// update GMM
+		int nMatchFlag = nMatchFlag1;
+		if(nMatchFlag == -1)
+		{
+			// not match
+			int nGmm = P->nGMMUsedNum;
+			for(int i=0; i<nGmm; ++i)
+			{
+				P->pGMM[i].fWeight = fAlpha1 * P->pGMM[i].fWeight - fCT;
+				if(P->pGMM[i].fWeight < fCT)
+				{
+					P->pGMM[i].fWeight = 0.0f;
+					P->nGMMUsedNum--;
+				}
+
+				// 如果有模型被删除掉，加入的新模型覆盖掉被删除的模型中位置最靠前的模型
+				// 如果没有模型被删除掉且模型数没有达到最大，加入个新模型，否则用新模型替代权重最小的模型
+				if (P->nGMMUsedNum < GmmMaxNum)
+				{
+					P->nGMMUsedNum++;
+				}
+
+				// 给新模型赋权重、均值和方差
+				int nLastModeIndex = P->nGMMUsedNum - 1;
+				P->pGMM[nLastModeIndex].fWeight = fAlphaW;
+				P->pGMM[nLastModeIndex].fGradX = (float)G[0];
+				P->pGMM[nLastModeIndex].fGradY	= (float)G[1];
+			}
+
+			// sort keys
+			int nMatchIndex = P->nGMMUsedNum - 1;
+			float fMatchWeight = P->pGMM[nMatchIndex].fWeight;
+			for(int i=nMatchIndex; i>0; i--)
+			{
+				if(fMatchWeight <= P->pGMM[i - 1].fWeight)
+				{
+					break;
+				}
+				else
+				{
+					struct ST_PixelPerGMM temp = P->pGMM[i - 1];
+					P->pGMM[i - 1] = P->pGMM[i];
+					P->pGMM[i] = temp;
+				}
+			}
+		}
+		else
+		{
+			if(*B == FOREGROUND && P->pGMM[nMatchFlag].fWeight > WeightThL)
+			{
+				fAlphaW = fastLearnRate;
+				fAlpha1 = 1.0f - fAlphaW;
+				fCT = 0.05f * fAlphaW;
+			}
+
+			// update mathch gmm
+			__global struct ST_PixelPerGMM* pGMM = P->pGMM;
+
+			//更新高斯模型的权重
+			int nGMMUsedNum = P->nGMMUsedNum;
+			for(int i=0; i<nGMMUsedNum; i++)
+			{
+				if(i != nMatchFlag)
+				{
+					//对不匹配的模型权重进行更新
+					pGMM[i].fWeight = fAlpha1 * pGMM[i].fWeight - fCT;
+
+					//当权重小于0时，删除该模型
+					if(pGMM[i].fWeight < fCT)
+					{
+						//当前位置权重置零
+						pGMM[i].fWeight = 0.0f;
+
+						//模型数减一
+						P->nGMMUsedNum--;
+					}
+				}
+			}
+
+			// sort keys
+			int nMatchIndex = nMatchFlag;
+			float fMatchWeight = P->pGMM[nMatchFlag].fWeight;
+			for(int i=nMatchIndex; i>0; i--)
+			{
+				if(fMatchWeight <= pGMM[i - 1].fWeight)
+				{
+					break;
+				}
+				else
+				{
+					struct ST_PixelPerGMM temp = P->pGMM[i - 1];
+					P->pGMM[i - 1] = P->pGMM[i];
+					P->pGMM[i] = temp;
+				}
+			}
+		}
+	}
+}
+
+__kernel void MatchForeJudge_Skip(__global int* grad, __global struct ST_PixelGMM* gmm, __global uchar* bw, int count, float varRatio)
+{
+	int x = get_global_id(0);
+	if(x < count)
+	{
+		__global struct ST_PixelGMM* P = gmm + x;
+		__global int* G = grad + x * 2;
+		__global uchar* B = bw + x;
+		float fTotalWeight = 0.0f;
+		for(int i=0; i<P->nGMMUsedNum; ++i)
+			fTotalWeight += P->pGMM[i].fWeight;
+		if(fTotalWeight > 1.0f)
+		{
+			for(int i=0; i<P->nGMMUsedNum; ++i)
+				P->pGMM[i].fWeight /= fTotalWeight;
+			fTotalWeight = 1.0f;
+		}
+		float fThres = varRatio * P->fVar;
+		int nMatchFlag = -1;
+		for(int i=0; i<P->nGMMUsedNum; ++i)
+		{
+			float fDiffX = P->pGMM[i].fGradX - (float)G[0];
+			float fDiffY = P->pGMM[i].fGradY - (float)G[1];
+			float fDist = fabs(fDiffX) + fabs(fDiffY);
+			if(fDist * fDist < fThres)
+			{
+				nMatchFlag = i;
+				break;
+			}
+		}
+		if(nMatchFlag == 0)
+			*B = BACKGROUND;
+		else if(nMatchFlag == -1)
+			*B = FOREGROUND;
+		else
+		{
+			float fSumWeight = 0.0f;
+			for(int i=0; i<nMatchFlag; ++i)
+				fSumWeight += P->pGMM[i].fWeight;
+			if(fSumWeight < Thres * fTotalWeight)
+				*B = BACKGROUND;
+			else
+				*B = FOREGROUND;
+		}
 	}
 }
 
@@ -1935,6 +2212,12 @@ bool init_platform(int platformID)
 			clLutArray1 = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(bLUTArray1), bLUTArray1, NULL);
 			clLutArray2 = clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, sizeof(bLUTArray2), bLUTArray2, NULL);
 			assert(clSmooth1D && clSmooth2DX && clSmooth2DY && clFactorRegion && clLutArray1 && clLutArray2);
+
+			// GMM
+			clPgmGMM = clCreateProgramWithSource(clContext, 1, &g_szKernelGMM, NULL, NULL);
+			char const* build_opts = "-D GmmMaxNum=3 -D MinVar=1.0f -D MaxVar=9.0f -D InitialVar=4.0f "
+				"-D Thres=0.67f -D SlowWLearnRate=225 -D FOREGROUND=255 -D BACKGROUND=0 -D WeightThL=0.17f -cl-fast-relaxed-math";
+			errcode = clBuildProgram(clPgmGMM, 1, &clDeviceID, build_opts, NULL, NULL);
 			break;
 		}
 	}
@@ -1963,18 +2246,6 @@ bool release_platform()
 		clReleaseMemObject(clLutArray2), clLutArray2 = NULL;
 	return true;
 }
-
-template<>
-class std::auto_ptr<cl_mem>
-{
-public:
-	explicit auto_ptr(cl_mem _Mem = NULL) : _Mymem(_Mem) {}
-	operator cl_mem() const { return _Mymem; }
-	~auto_ptr() { if(_Mymem != NULL) clReleaseMemObject(_Mymem); _Mymem = NULL; }
-
-private:
-	cl_mem	_Mymem;
-};
 
 bool clGetCannyEdge(unsigned char* edge,
 					unsigned char const* image,
