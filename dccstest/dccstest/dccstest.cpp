@@ -24,21 +24,25 @@ int main()
 	xhGradsGMM gmm;
 	gmm.SetVideoFrameInfo(768, 576);
 	string imgsec = "C:\\opencv3\\opencv\\sources\\samples\\data\\768x576\\1.jpg";
+	double sum = 0;
+	int framenum = 1;
 	for(;;)
 	{
 		img = imread(imgsec);
 		if(img.empty()) break;
-		int framenum = 1;
 		string numstr = imgsec.substr(imgsec.rfind('\\')+1, imgsec.rfind('.')-imgsec.rfind('\\')-1);
 		istringstream istr(numstr);
 		istr >> framenum;
 		double t = getTickCount();
 		gmm.SetVideoFrame(img.data, NULL, framenum);
-		printf("SetVideoFrame: %.2fms\n", (getTickCount()-t)*1000/getTickFrequency());
 		BYTE* bw;
 		gmm.GetGmmBw(&bw);
+		double fps = 1.0/((getTickCount()-t)/getTickFrequency());
+		printf("fps: %.1ffps\n", fps);
+		if(framenum > 1)
+			sum += fps;
 		imshow("", Mat(img.size(), CV_8UC1, bw));
-		if(waitKey(30) == 27)
+		if(waitKey(25) == 27)
 			break;
 		ostringstream ostr;
 		ostr << framenum+1;
@@ -47,7 +51,8 @@ int main()
 		imgsec.append(numstr+".jpg");
 	}
 	t.stop();
-	printf("%.2fms\n", t.gettimems());
+	printf("sum: %.1f, num: %d\n", sum, framenum);
+	printf("%.ffps\n", sum/(framenum-1));
 // 	imshow("", img);
 // 	waitKey(0);
 	release_platform();

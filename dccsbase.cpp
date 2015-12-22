@@ -2218,6 +2218,7 @@ bool init_platform(int platformID)
 			char const* build_opts = "-D GmmMaxNum=3 -D MinVar=1.0f -D MaxVar=9.0f -D InitialVar=4.0f "
 				"-D Thres=0.67f -D SlowWLearnRate=225 -D FOREGROUND=255 -D BACKGROUND=0 -D WeightThL=0.17f -cl-fast-relaxed-math";
 			errcode = clBuildProgram(clPgmGMM, 1, &clDeviceID, build_opts, NULL, NULL);
+			assert(errcode == CL_SUCCESS);
 			break;
 		}
 	}

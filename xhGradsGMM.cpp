@@ -128,7 +128,7 @@ void xhGradsGMM::Sobel(const BYTE* pbImage, const BYTE* pbMask)
 {
 #ifdef OPENCL_FOR_GRAD_GMM
 	typedef std::auto_ptr<cl_mem> mem_type;
-	mem_type clSrc(clCreateBuffer(clContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, m_nSize, (void*)pbImage, NULL));
+	mem_type clSrc(clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, m_nSize, (void*)pbImage, NULL));
 	size_t local_work_size[] = {16, 16};
 	size_t global_work_size[] = {(m_nWidth+15) & ~15, (m_nHeight+15) & ~15};
 	cl_int errcode = CL_SUCCESS;
@@ -144,7 +144,7 @@ void xhGradsGMM::Sobel(const BYTE* pbImage, const BYTE* pbMask)
 	}
 	else
 	{
-		mem_type clMask(clCreateBuffer(clContext, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR, m_nSize, (void*)pbMask, NULL));
+		mem_type clMask(clCreateBuffer(clContext, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR, m_nSize, (void*)pbMask, NULL));
 		cl_kernel kernalSobel = clCreateKernel(clPgmGMM, "SobelMask", NULL);
 		clSetKernelArg(kernalSobel, 0, sizeof(cl_mem), &m_clGrad);
 		clSetKernelArg(kernalSobel, 1, sizeof(cl_mem), &clSrc);
